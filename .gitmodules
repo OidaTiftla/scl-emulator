@@ -1,0 +1,3 @@
+[submodule "Siemens-SCL-Antlr-Grammar"]
+	path = Siemens-SCL-Antlr-Grammar
+	url = git@github.com:jc211/Siemens-SCL-Antlr-Grammar.git
