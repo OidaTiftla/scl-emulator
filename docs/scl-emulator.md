@@ -5,11 +5,11 @@ The SCL emulator interprets the Siemens SCL parse tree emitted by `parseScl` and
 ## Supported language surface
 
 - Block types: the first `FUNCTION_BLOCK`, `ORGANIZATION_BLOCK`, `FUNCTION`, or `DATA_BLOCK` body discovered in the AST.
-- Statements: assignments, `IF`/`ELSIF`/`ELSE`, `CASE`/`ELSE`, and `WHILE ... DO ... END_WHILE` (guarded by a configurable iteration limit).
+- Statements: assignments, `IF`/`ELSIF`/`ELSE`, `CASE`/`ELSE` (including comma-separated selectors and `a..b` ranges), `WHILE ... DO ... END_WHILE` (guarded by a configurable iteration limit), and `FOR` loops with optional `BY` steps.
 - Expressions: variable references, direct addresses (e.g. `M0.0`, `DB1.DBW0`), literals, arithmetic (`+ - * /`), boolean (`AND OR XOR NOT`), and comparisons (`= <> < <= > >=`).
 - Data types: `BOOL`, `BYTE`, `WORD`, `DWORD`, `SINT`, `INT`, `DINT`, `LINT`, `REAL`, `LREAL`, `TIME`, `DATE`, `TOD`, and `STRING` when those types are read or written through the PLC state APIs.
 
-Unsupported constructs (e.g. `FOR` loops, user-defined `TYPE`s, arrays, or ranges inside `CASE`) raise `SclEmulatorBuildError` with the offending source range.
+Unsupported constructs (e.g. `REPEAT` loops, user-defined TYPE declarations, or array declarations) raise `SclEmulatorBuildError` with the offending source range.
 
 ## API
 
@@ -121,5 +121,6 @@ executeSclProgram(resetAst, plc, {
 - Only the first block in the AST is executed; multi-block sources require separate invocations.
 - Initial values declared via `:=` are applied at the start of each scan. Persisting power-on values is future work.
 - Address inference covers common forms (`I/Q/M` bit/byte/word/dword and `DBn.DBX/DBB/DBW/DBD`). Use `addressTypes` for ambiguous tokens like `MD0`.
-- `CASE` ranges and `EXIT`/`CONTINUE` statements are not yet supported.
+- `CASE` selectors accept discrete values and inclusive ranges (e.g., `0..5`); `EXIT`/`CONTINUE` statements are not yet supported.
+- `FOR` loops require arithmetic iterators; negative steps are supported via `BY -1`, while `DOWNTO` syntax remains unsupported.
 - Execution is single-cycle; multi-cycle retention semantics or timers/counters remain out-of-scope for this milestone.

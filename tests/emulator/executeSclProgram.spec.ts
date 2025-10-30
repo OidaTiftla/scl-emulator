@@ -77,6 +77,40 @@ describe("executeSclProgram", () => {
     expect(countValue.ok && countValue.value).toBe(3);
   });
 
+  it("executes FOR loops with explicit step increments", () => {
+    const source = `
+      FUNCTION_BLOCK ForLoop
+      VAR
+        index : INT;
+        total : INT;
+      END_VAR
+      BEGIN
+        total := 0;
+        FOR index := 0 TO 4 BY 2 DO
+          total := total + index;
+        END_FOR;
+      END_FUNCTION_BLOCK
+    `;
+
+    const ast = parseScl(source);
+    const state = createPlcState({
+      dataBlocks: [{ id: 1, size: 8 }],
+    });
+
+    executeSclProgram(ast, state, {
+      symbols: {
+        index: "DB1.DBW0",
+        total: "DB1.DBW2",
+      },
+    });
+
+    const indexValue = state.readInt("DB1.DBW0");
+    expect(indexValue.ok && indexValue.value).toBe(6);
+
+    const totalValue = state.readInt("DB1.DBW2");
+    expect(totalValue.ok && totalValue.value).toBe(6);
+  });
+
   it("executes CASE selectors with ELSE branch to drive outputs", () => {
     const source = `
       FUNCTION_BLOCK ModeSwitcher
@@ -112,6 +146,48 @@ describe("executeSclProgram", () => {
     expect(output.ok && output.value).toBe(1);
   });
 
+  it("supports CASE selector ranges", () => {
+    const source = `
+      FUNCTION_BLOCK RangeSwitch
+      VAR
+        mode : INT;
+      END_VAR
+      BEGIN
+        CASE mode OF
+          0..5: QB0 := 1;
+          6, 8..10: QB0 := 2;
+        ELSE
+          QB0 := 3;
+        END_CASE;
+      END_FUNCTION_BLOCK
+    `;
+
+    const ast = parseScl(source);
+
+    const runWithMode = (modeValue: number) => {
+      const state = createPlcState({
+        outputs: { size: 1 },
+        dataBlocks: [{ id: 1, size: 4 }],
+      });
+      const writeResult = state.writeInt("DB1.DBW0", modeValue);
+      expect(writeResult.ok).toBe(true);
+
+      executeSclProgram(ast, state, {
+        symbols: {
+          mode: "DB1.DBW0",
+        },
+      });
+
+      const output = state.readByte("QB0");
+      expect(output.ok).toBe(true);
+      return output.ok ? output.value : undefined;
+    };
+
+    expect(runWithMode(3)).toBe(1);
+    expect(runWithMode(9)).toBe(2);
+    expect(runWithMode(7)).toBe(3);
+  });
+
   it("enforces loop iteration guard", () => {
     const source = `
       FUNCTION_BLOCK Infinite
@@ -144,12 +220,13 @@ describe("executeSclProgram", () => {
     const source = `
       FUNCTION_BLOCK Unsupported
       VAR
-        count : INT;
+        flag : BOOL;
       END_VAR
       BEGIN
-        FOR count := 0 TO 3 DO
-          count := count + 1;
-        END_FOR;
+        REPEAT
+          flag := NOT flag;
+        UNTIL flag
+        END_REPEAT;
       END_FUNCTION_BLOCK
     `;
 
@@ -161,7 +238,7 @@ describe("executeSclProgram", () => {
     expect(() =>
       executeSclProgram(ast, state, {
         symbols: {
-          count: "DB1.DBW0",
+          flag: "DB1.DBX0.0",
         },
       })
     ).toThrow(SclEmulatorBuildError);

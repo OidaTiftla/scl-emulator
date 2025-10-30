@@ -10,6 +10,7 @@ import type {
   IrCaseStatement,
   IrExpression,
   IrIfStatement,
+  IrForStatement,
   IrProgram,
   IrStatement,
   IrWhileStatement,
@@ -184,6 +185,9 @@ class Interpreter {
       case "case":
         this.executeCase(statement);
         return;
+      case "for":
+        this.executeFor(statement);
+        return;
     }
     assertNever(statement as never, statementRange, `Unsupported statement kind "${statementKind}"`);
   }
@@ -263,6 +267,107 @@ class Interpreter {
     }
   }
 
+  private executeFor(statement: IrForStatement): void {
+    const binding = this.symbolTable.get(statement.iterator.name);
+    if (!binding) {
+      throw new SclEmulatorRuntimeError(
+        `Variable "${statement.iterator.name}" is not bound to PLC memory`,
+        statement.iterator.range
+      );
+    }
+
+    const useBigInt = binding.dataType === "LINT";
+
+    const effects: ExecutionEffect[] = [];
+
+    const initialValue = this.evaluateExpression(statement.initial);
+    const initEffect = this.writeBinding(
+      binding,
+      initialValue,
+      statement.initial.range,
+      statement.range
+    );
+    effects.push(initEffect);
+
+    let current: bigint | number = useBigInt
+      ? toBigInt({ value: initEffect.value, dataType: "LINT" }, statement.range)
+      : toNumber({ value: initEffect.value, dataType: binding.dataType }, statement.range);
+
+    const endValue = this.evaluateExpression(statement.end);
+    const endNumeric = useBigInt
+      ? toBigInt(endValue, statement.end.range)
+      : toNumber(endValue, statement.end.range);
+
+    const stepRange = statement.step?.range ?? statement.range;
+    const stepValue: ExecutionValue = statement.step
+      ? this.evaluateExpression(statement.step)
+      : useBigInt
+        ? { value: 1n, dataType: "LINT" }
+        : { value: 1, dataType: binding.dataType };
+
+    const stepNumeric = useBigInt
+      ? toBigInt(stepValue, stepRange)
+      : toNumber(stepValue, stepRange);
+
+    if ((useBigInt && stepNumeric === 0n) || (!useBigInt && stepNumeric === 0)) {
+      throw new SclEmulatorRuntimeError("FOR loop step cannot be zero", statement.range);
+    }
+
+    const shouldContinue = (): boolean => {
+      if (useBigInt) {
+        const step = stepNumeric as bigint;
+        const currentValue = current as bigint;
+        const endValueCast = endNumeric as bigint;
+        return step > 0n ? currentValue <= endValueCast : currentValue >= endValueCast;
+      }
+      const step = stepNumeric as number;
+      const currentValue = current as number;
+      const endValueCast = endNumeric as number;
+      return step > 0 ? currentValue <= endValueCast : currentValue >= endValueCast;
+    };
+
+    let iterations = 0;
+    while (shouldContinue()) {
+      iterations += 1;
+      if (iterations > this.maxLoopIterations) {
+        throw new SclEmulatorRuntimeError(
+          `FOR loop exceeded ${this.maxLoopIterations} iterations`,
+          statement.range
+        );
+      }
+
+      this.executeBlock(statement.body);
+
+      if (useBigInt) {
+        current = (current as bigint) + (stepNumeric as bigint);
+      } else {
+        current = (current as number) + (stepNumeric as number);
+      }
+      const nextValue: ExecutionValue = useBigInt
+        ? { value: current, dataType: "LINT" }
+        : { value: current, dataType: binding.dataType };
+
+      const nextEffect = this.writeBinding(
+        binding,
+        nextValue,
+        statement.range,
+        statement.range
+      );
+      effects.push(nextEffect);
+
+      current = useBigInt
+        ? toBigInt({ value: nextEffect.value, dataType: "LINT" }, statement.range)
+        : toNumber({ value: nextEffect.value, dataType: binding.dataType }, statement.range);
+    }
+
+    if (this.traceEnabled && effects.length > 0) {
+      this.traceEntries.push({
+        statementRange: statement.range,
+        effects,
+      });
+    }
+  }
+
   private executeCase(statement: IrCaseStatement): void {
     const discriminant = this.evaluateExpression(statement.discriminant);
     for (const branch of statement.cases) {
@@ -277,10 +382,20 @@ class Interpreter {
   }
 
   private caseBranchMatches(branch: IrCaseBranch, discriminant: ExecutionValue): boolean {
-    for (const selectorExpr of branch.selectors) {
-      const selector = this.evaluateExpression(selectorExpr);
-      if (compareExecutionValues(discriminant, selector, "EQ", selectorExpr.range)) {
-        return true;
+    for (const selector of branch.selectors) {
+      if (selector.kind === "value") {
+        const candidate = this.evaluateExpression(selector.expression);
+        if (compareExecutionValues(discriminant, candidate, "EQ", selector.range)) {
+          return true;
+        }
+      } else {
+        const start = this.evaluateExpression(selector.start);
+        const end = this.evaluateExpression(selector.end);
+        const meetsLowerBound = compareExecutionValues(discriminant, start, "GTE", selector.range);
+        const meetsUpperBound = compareExecutionValues(discriminant, end, "LTE", selector.range);
+        if (meetsLowerBound && meetsUpperBound) {
+          return true;
+        }
       }
     }
     return false;

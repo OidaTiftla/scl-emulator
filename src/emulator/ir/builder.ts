@@ -12,10 +12,12 @@ import type {
   IrAssignmentStatement,
   IrCaseBranch,
   IrCaseStatement,
+  IrCaseSelector,
   IrExpression,
   IrIfBranch,
   IrIfStatement,
   IrLiteralExpression,
+  IrForStatement,
   IrProgram,
   IrStatement,
   IrUnaryExpression,
@@ -38,8 +40,6 @@ class IrBuilder {
   private readonly ast: SclAst;
 
   private readonly variables: IrVariable[] = [];
-
-  private readonly variableNames = new Set<string>();
 
   constructor(ast: SclAst) {
     this.ast = ast;
@@ -124,7 +124,6 @@ class IrBuilder {
         stringLength,
         initializer,
       });
-      this.variableNames.add(name);
     }
   }
 
@@ -197,6 +196,8 @@ class IrBuilder {
         return this.buildWhileStatement(core);
       case "switchStatement":
         return this.buildCaseStatement(core);
+      case "forStatement":
+        return this.buildForStatement(core);
       default:
         throw new SclEmulatorBuildError(
           `Unsupported statement type "${core.type}"`,
@@ -370,9 +371,16 @@ class IrBuilder {
       );
     }
 
-    const selectors: IrExpression[] = [];
+    const selectors: IrCaseSelector[] = [];
     for (const labelChild of labelNode.children) {
       if (labelChild.type === "switchLabelConstant") {
+        const rangeNode = labelChild.children.find(
+          (grand) => grand.type === "ArraySubRange"
+        );
+        if (rangeNode) {
+          selectors.push(this.buildRangeSelector(rangeNode));
+          continue;
+        }
         const constantNode = findFirst(
           labelChild,
           (grand) => grand.type === "constant" || grand.type === "expr"
@@ -383,12 +391,20 @@ class IrBuilder {
             labelChild.range
           );
         }
-        selectors.push(this.buildExpression(constantNode));
+        selectors.push({
+          kind: "value",
+          expression: this.buildExpression(constantNode),
+          range: labelChild.range,
+        });
       } else if (labelChild.type === "switchLabelRange") {
-        throw new SclEmulatorBuildError(
-          "CASE ranges are not supported",
-          labelChild.range
-        );
+        const rangeNode = findFirst(labelChild, (grand) => grand.type === "ArraySubRange");
+        if (!rangeNode) {
+          throw new SclEmulatorBuildError(
+            "Switch label range missing bounds",
+            labelChild.range
+          );
+        }
+        selectors.push(this.buildRangeSelector(rangeNode));
       }
     }
 
@@ -402,6 +418,89 @@ class IrBuilder {
     return {
       selectors,
       statements: this.buildStatementContainer(statementsNode),
+      range: node.range,
+    };
+  }
+
+  private buildRangeSelector(node: SclAstNode): IrCaseSelector {
+    const match = node.text.match(/^\s*(.+?)\s*\.\.\s*(.+?)\s*$/);
+    if (!match) {
+      throw new SclEmulatorBuildError(
+        `Invalid CASE range selector "${node.text}"`,
+        node.range
+      );
+    }
+    const [, startRaw, endRaw] = match;
+    const start = createLiteralExpressionFromText(startRaw, node.range);
+    const end = createLiteralExpressionFromText(endRaw, node.range);
+    return {
+      kind: "range",
+      start,
+      end,
+      range: node.range,
+    };
+  }
+
+  private buildForStatement(node: SclAstNode): IrForStatement {
+    const initNode = findFirst(node, (child) => child.type === "forInitialCondition");
+    const endNode = findFirst(node, (child) => child.type === "forEndCondition");
+    const stepNode = findFirst(node, (child) => child.type === "forStepCondition");
+    const bodyNode = findFirst(node, (child) => child.type === "forBlockStatements");
+
+    if (!initNode || !endNode || !bodyNode) {
+      throw new SclEmulatorBuildError(
+        "FOR loop missing initializer, end condition, or body",
+        node.range
+      );
+    }
+
+    const initAssignment = findFirst(
+      initNode,
+      (child) => child.type === "assignmentStatement"
+    );
+    if (!initAssignment) {
+      throw new SclEmulatorBuildError(
+        "FOR initializer must be an assignment",
+        initNode.range
+      );
+    }
+
+    const leftNode = findFirst(initAssignment, (child) => child.type === "expr");
+    const rightNode =
+      findFirst(initAssignment, (child) => child.type === "rightHandAssignment") ??
+      initAssignment.children.find((child) => child.type === "expr");
+
+    if (!leftNode || !rightNode) {
+      throw new SclEmulatorBuildError(
+        "FOR initializer assignment is malformed",
+        initAssignment.range
+      );
+    }
+
+    const iterator = this.buildAssignable(leftNode);
+    if (iterator.kind !== "variable") {
+      throw new SclEmulatorBuildError(
+        "FOR iterator must be a declared variable",
+        leftNode.range
+      );
+    }
+
+    const endExpr =
+      findFirst(endNode, (child) => child.type === "expr") ?? endNode;
+
+    const stepExpr = stepNode
+      ? findFirst(stepNode, (child) => child.type === "expr") ?? stepNode
+      : undefined;
+
+    const initialExprNode = findFirst(rightNode, (child) => child.type === "expr") ?? rightNode;
+
+    return {
+      kind: "for",
+      iterator,
+      initial: this.buildExpression(initialExprNode),
+      end: this.buildExpression(endExpr),
+      step: stepExpr ? this.buildExpression(stepExpr) : undefined,
+      body: this.buildStatementContainer(bodyNode),
       range: node.range,
     };
   }
@@ -851,6 +950,60 @@ function literalFromNumber(
     value,
     range,
   };
+}
+
+function createLiteralExpressionFromText(
+  raw: string,
+  range: SourceRange
+): IrLiteralExpression {
+  const trimmed = raw.trim();
+  const upper = trimmed.toUpperCase();
+
+  if (upper === "TRUE" || upper === "FALSE") {
+    return {
+      kind: "literal",
+      valueType: "BOOL",
+      value: upper === "TRUE",
+      range,
+    };
+  }
+
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith("\"") && trimmed.endsWith("\""))) {
+    return {
+      kind: "literal",
+      valueType: "STRING",
+      value: parseStringLiteral(trimmed),
+      range,
+    };
+  }
+
+  if (/^[+-]?\d+$/.test(trimmed)) {
+    const bigintValue = BigInt(trimmed);
+    if (bigintValue < BigInt(-2147483648) || bigintValue > BigInt(2147483647)) {
+      return {
+        kind: "literal",
+        valueType: "LINT",
+        value: bigintValue,
+        range,
+      };
+    }
+    const numberValue = Number.parseInt(trimmed, 10);
+    if (numberValue >= -32768 && numberValue <= 32767) {
+      return literalFromNumber(range, numberValue, "INT");
+    }
+    return literalFromNumber(range, numberValue, "DINT");
+  }
+
+  if (/^[+-]?\d*\.\d+(?:[eE][+-]?\d+)?$/.test(trimmed) || /^[+-]?\d+(?:[eE][+-]?\d+)$/.test(trimmed)) {
+    const numeric = Number.parseFloat(trimmed);
+    const valueType = trimmed.toUpperCase().includes("E") ? "LREAL" : "REAL";
+    return literalFromNumber(range, numeric, valueType);
+  }
+
+  throw new SclEmulatorBuildError(
+    `Unsupported literal value "${raw}" in CASE range`,
+    range
+  );
 }
 
 function parseStringLiteral(raw: string): string {

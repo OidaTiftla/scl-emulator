@@ -33,7 +33,8 @@ export type IrStatement =
   | IrAssignmentStatement
   | IrIfStatement
   | IrWhileStatement
-  | IrCaseStatement;
+  | IrCaseStatement
+  | IrForStatement;
 
 export interface IrAssignmentStatement {
   readonly kind: "assignment";
@@ -70,8 +71,31 @@ export interface IrCaseStatement {
 }
 
 export interface IrCaseBranch {
-  readonly selectors: IrExpression[];
+  readonly selectors: IrCaseSelector[];
   readonly statements: IrStatement[];
+  readonly range: SourceRange;
+}
+
+export type IrCaseSelector =
+  | {
+      readonly kind: "value";
+      readonly expression: IrExpression;
+      readonly range: SourceRange;
+    }
+  | {
+      readonly kind: "range";
+      readonly start: IrExpression;
+      readonly end: IrExpression;
+      readonly range: SourceRange;
+    };
+
+export interface IrForStatement {
+  readonly kind: "for";
+  readonly iterator: IrVariableReference;
+  readonly initial: IrExpression;
+  readonly end: IrExpression;
+  readonly step?: IrExpression;
+  readonly body: IrStatement[];
   readonly range: SourceRange;
 }
 
