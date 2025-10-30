@@ -1,19 +1,21 @@
 import {
-  ATNSimulator,
   BaseErrorListener,
   CharStream,
   CommonTokenStream,
   ErrorNode,
   ParserRuleContext,
+  TerminalNode,
+} from "antlr4ng";
+import type {
+  ATNSimulator,
+  ParseTree,
   RecognitionException,
   Recognizer,
-  TerminalNode,
   Token,
-  type ParseTree,
-  type Vocabulary
+  Vocabulary,
 } from "antlr4ng";
-
-import { SclParseError, type SclAst, type SclAstNode, type SourceRange } from "./astTypes.js";
+import { SclParseError } from "./astTypes.js";
+import type { SclAst, SclAstNode, SourceRange } from "./astTypes.js";
 import { sclLexer } from "../generated/sclLexer.js";
 import { sclParser } from "../generated/sclParser.js";
 
