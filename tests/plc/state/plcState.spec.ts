@@ -5,8 +5,28 @@ import {
   diffStates,
   snapshotState,
 } from "../../../src/plc/state/index.js";
+import type {
+  PlcState,
+  PlcResult,
+  PlcVoidResult,
+} from "../../../src/plc/state/index.js";
 
 describe("createPlcState", () => {
+  function expectOk<T>(result: PlcResult<T>): T {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+    return result.value;
+  }
+
+  function expectVoidOk(result: PlcVoidResult): void {
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.error.message);
+    }
+  }
+
   it("reads and writes BOOL values with range validation", () => {
     const plc = createPlcState({ inputs: { size: 2 } });
 
@@ -101,6 +121,111 @@ describe("createPlcState", () => {
     expect(tooLarge.ok).toBe(false);
     if (!tooLarge.ok) {
       expect(tooLarge.error.code).toBe(PlcErrorCode.OutOfRange);
+    }
+  });
+
+  describe("scalar type round-trips", () => {
+    const baseConfig = { dataBlocks: [{ id: 1, size: 96 }] } as const;
+
+    const cases = [
+      {
+        name: "BOOL",
+        write: (plc: PlcState) => plc.writeBool("DB1.DBX0.1", true),
+        read: (plc: PlcState) => plc.readBool("DB1.DBX0.1"),
+        assert: (value: unknown) => expect(value).toBe(true),
+      },
+      {
+        name: "BYTE",
+        write: (plc: PlcState) => plc.writeByte("DB1.DBB2", 0xab),
+        read: (plc: PlcState) => plc.readByte("DB1.DBB2"),
+        assert: (value: unknown) => expect(value).toBe(0xab),
+      },
+      {
+        name: "SINT",
+        write: (plc: PlcState) => plc.writeSInt("DB1.DBB3", -42),
+        read: (plc: PlcState) => plc.readSInt("DB1.DBB3"),
+        assert: (value: unknown) => expect(value).toBe(-42),
+      },
+      {
+        name: "WORD",
+        write: (plc: PlcState) => plc.writeWord("DB1.DBW4", 0x1234),
+        read: (plc: PlcState) => plc.readWord("DB1.DBW4"),
+        assert: (value: unknown) => expect(value).toBe(0x1234),
+      },
+      {
+        name: "INT",
+        write: (plc: PlcState) => plc.writeInt("DB1.DBW6", -1234),
+        read: (plc: PlcState) => plc.readInt("DB1.DBW6"),
+        assert: (value: unknown) => expect(value).toBe(-1234),
+      },
+      {
+        name: "DWORD",
+        write: (plc: PlcState) => plc.writeDWord("DB1.DBD8", 0x89abcdef),
+        read: (plc: PlcState) => plc.readDWord("DB1.DBD8"),
+        assert: (value: unknown) => expect(value).toBe(0x89abcdef),
+      },
+      {
+        name: "DINT",
+        write: (plc: PlcState) => plc.writeDInt("DB1.DBD12", -20202020),
+        read: (plc: PlcState) => plc.readDInt("DB1.DBD12"),
+        assert: (value: unknown) => expect(value).toBe(-20202020),
+      },
+      {
+        name: "LINT",
+        write: (plc: PlcState) => plc.writeLint("DB1.DBX16.0", 1234567890123456n),
+        read: (plc: PlcState) => plc.readLint("DB1.DBX16.0"),
+        assert: (value: unknown) => expect(value).toBe(1234567890123456n),
+      },
+      {
+        name: "REAL",
+        write: (plc: PlcState) => plc.writeReal("DB1.DBX24.0", 42.25),
+        read: (plc: PlcState) => plc.readReal("DB1.DBX24.0"),
+        assert: (value: unknown) => expect(value as number).toBeCloseTo(42.25, 5),
+      },
+      {
+        name: "LREAL",
+        write: (plc: PlcState) => plc.writeLReal("DB1.DBX32.0", 3.141592653589793),
+        read: (plc: PlcState) => plc.readLReal("DB1.DBX32.0"),
+        assert: (value: unknown) => expect(value as number).toBeCloseTo(3.141592653589793, 9),
+      },
+      {
+        name: "TIME",
+        write: (plc: PlcState) => plc.writeTime("DB1.DBX40.0", 123456),
+        read: (plc: PlcState) => plc.readTime("DB1.DBX40.0"),
+        assert: (value: unknown) => expect(value).toBe(123456),
+      },
+      {
+        name: "DATE",
+        write: (plc: PlcState) => plc.writeDate("DB1.DBW44", 7300),
+        read: (plc: PlcState) => plc.readDate("DB1.DBW44"),
+        assert: (value: unknown) => expect(value).toBe(7300),
+      },
+      {
+        name: "TOD",
+        write: (plc: PlcState) => plc.writeTod("DB1.DBX48.0", 5678901),
+        read: (plc: PlcState) => plc.readTod("DB1.DBX48.0"),
+        assert: (value: unknown) => expect(value).toBe(5678901),
+      },
+      {
+        name: "STRING",
+        write: (plc: PlcState) => plc.writeString("DB1.DBB52", "SIM", { maxLength: 8 }),
+        read: (plc: PlcState) => plc.readString("DB1.DBB52"),
+        assert: (value: unknown) => expect(value).toBe("SIM"),
+      },
+    ] satisfies Array<{
+      name: string;
+      write: (plc: PlcState) => PlcVoidResult;
+      read: (plc: PlcState) => PlcResult<unknown>;
+      assert: (value: unknown) => void;
+    }>;
+
+    for (const { name, write, read, assert } of cases) {
+      it(`round-trips ${name}`, () => {
+        const plc = createPlcState(baseConfig);
+        expectVoidOk(write(plc));
+        const value = expectOk(read(plc));
+        assert(value);
+      });
     }
   });
 
