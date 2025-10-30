@@ -34,7 +34,9 @@ export type IrStatement =
   | IrIfStatement
   | IrWhileStatement
   | IrCaseStatement
-  | IrForStatement;
+  | IrForStatement
+  | IrExitStatement
+  | IrContinueStatement;
 
 export interface IrAssignmentStatement {
   readonly kind: "assignment";
@@ -96,6 +98,16 @@ export interface IrForStatement {
   readonly end: IrExpression;
   readonly step?: IrExpression;
   readonly body: IrStatement[];
+  readonly range: SourceRange;
+}
+
+export interface IrExitStatement {
+  readonly kind: "exit";
+  readonly range: SourceRange;
+}
+
+export interface IrContinueStatement {
+  readonly kind: "continue";
   readonly range: SourceRange;
 }
 

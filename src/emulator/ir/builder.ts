@@ -25,6 +25,8 @@ import type {
   IrVariableExpression,
   IrVariableReference,
   IrWhileStatement,
+  IrExitStatement,
+  IrContinueStatement,
   SclDataType,
   UnaryOperator,
 } from "./types.js";
@@ -198,6 +200,10 @@ class IrBuilder {
         return this.buildCaseStatement(core);
       case "forStatement":
         return this.buildForStatement(core);
+      case "'EXIT'":
+        return this.buildExitStatement(core);
+      case "'CONTINUE'":
+        return this.buildContinueStatement(core);
       default:
         throw new SclEmulatorBuildError(
           `Unsupported statement type "${core.type}"`,
@@ -501,6 +507,20 @@ class IrBuilder {
       end: this.buildExpression(endExpr),
       step: stepExpr ? this.buildExpression(stepExpr) : undefined,
       body: this.buildStatementContainer(bodyNode),
+      range: node.range,
+    };
+  }
+
+  private buildExitStatement(node: SclAstNode): IrExitStatement {
+    return {
+      kind: "exit",
+      range: node.range,
+    };
+  }
+
+  private buildContinueStatement(node: SclAstNode): IrContinueStatement {
+    return {
+      kind: "continue",
       range: node.range,
     };
   }

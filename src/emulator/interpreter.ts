@@ -68,6 +68,8 @@ interface ExecutionValue {
   readonly dataType: SclDataType;
 }
 
+type LoopControl = "normal" | "exit" | "continue";
+
 export function executeProgram(
   program: IrProgram,
   state: PlcState,
@@ -99,7 +101,7 @@ class Interpreter {
     this.buildSymbolTable();
     this.initializeVariables();
     for (const statement of this.program.statements) {
-      this.executeStatement(statement);
+      this.executeStatement(statement, false);
     }
   }
 
@@ -169,30 +171,41 @@ class Interpreter {
     }
   }
 
-  private executeStatement(statement: IrStatement): void {
-    const statementRange = statement.range;
+  private executeStatement(statement: IrStatement, inLoop: boolean): LoopControl {
     const statementKind = statement.kind;
+    const statementRange = statement.range;
     switch (statement.kind) {
       case "assignment":
-        this.executeAssignment(statement);
-        return;
+        return this.executeAssignment(statement);
       case "if":
-        this.executeIf(statement);
-        return;
+        return this.executeIf(statement, inLoop);
       case "while":
-        this.executeWhile(statement);
-        return;
+        return this.executeWhile(statement, inLoop);
       case "case":
-        this.executeCase(statement);
-        return;
+        return this.executeCase(statement, inLoop);
       case "for":
-        this.executeFor(statement);
-        return;
+        return this.executeFor(statement);
+      case "exit":
+        if (!inLoop) {
+          throw new SclEmulatorRuntimeError(
+            "EXIT may only be used inside a loop",
+            statement.range
+          );
+        }
+        return "exit";
+      case "continue":
+        if (!inLoop) {
+          throw new SclEmulatorRuntimeError(
+            "CONTINUE may only be used inside a loop",
+            statement.range
+          );
+        }
+        return "continue";
     }
-    assertNever(statement as never, statementRange, `Unsupported statement kind "${statementKind}"`);
+    return assertNever(statement as never, statementRange, `Unsupported statement kind "${statementKind}"`);
   }
 
-  private executeAssignment(statement: IrAssignmentStatement): void {
+  private executeAssignment(statement: IrAssignmentStatement): LoopControl {
     const value = this.evaluateExpression(statement.expression);
     const effects: ExecutionEffect[] = [];
 
@@ -233,23 +246,23 @@ class Interpreter {
         effects,
       });
     }
+    return "normal";
   }
 
-  private executeIf(statement: IrIfStatement): void {
+  private executeIf(statement: IrIfStatement, inLoop: boolean): LoopControl {
     for (const branch of statement.branches) {
       if (!branch.condition) {
-        this.executeBlock(branch.statements);
-        return;
+        return this.executeBlock(branch.statements, inLoop);
       }
       const conditionValue = this.evaluateExpression(branch.condition);
       if (toBoolean(conditionValue, branch.condition.range)) {
-        this.executeBlock(branch.statements);
-        return;
+        return this.executeBlock(branch.statements, inLoop);
       }
     }
+    return "normal";
   }
 
-  private executeWhile(statement: IrWhileStatement): void {
+  private executeWhile(statement: IrWhileStatement, _inLoop: boolean): LoopControl {
     let iterations = 0;
     while (true) {
       const condition = this.evaluateExpression(statement.condition);
@@ -263,11 +276,18 @@ class Interpreter {
           statement.range
         );
       }
-      this.executeBlock(statement.body);
+      const control = this.executeBlock(statement.body, true);
+      if (control === "exit") {
+        break;
+      }
+      if (control === "continue") {
+        continue;
+      }
     }
+    return "normal";
   }
 
-  private executeFor(statement: IrForStatement): void {
+  private executeFor(statement: IrForStatement): LoopControl {
     const binding = this.symbolTable.get(statement.iterator.name);
     if (!binding) {
       throw new SclEmulatorRuntimeError(
@@ -336,7 +356,11 @@ class Interpreter {
         );
       }
 
-      this.executeBlock(statement.body);
+      const control = this.executeBlock(statement.body, true);
+
+      if (control === "exit") {
+        break;
+      }
 
       if (useBigInt) {
         current = (current as bigint) + (stepNumeric as bigint);
@@ -366,19 +390,20 @@ class Interpreter {
         effects,
       });
     }
+    return "normal";
   }
 
-  private executeCase(statement: IrCaseStatement): void {
+  private executeCase(statement: IrCaseStatement, inLoop: boolean): LoopControl {
     const discriminant = this.evaluateExpression(statement.discriminant);
     for (const branch of statement.cases) {
       if (this.caseBranchMatches(branch, discriminant)) {
-        this.executeBlock(branch.statements);
-        return;
+        return this.executeBlock(branch.statements, inLoop);
       }
     }
     if (statement.elseBranch) {
-      this.executeBlock(statement.elseBranch);
+      return this.executeBlock(statement.elseBranch, inLoop);
     }
+    return "normal";
   }
 
   private caseBranchMatches(branch: IrCaseBranch, discriminant: ExecutionValue): boolean {
@@ -401,10 +426,14 @@ class Interpreter {
     return false;
   }
 
-  private executeBlock(statements: readonly IrStatement[]): void {
+  private executeBlock(statements: readonly IrStatement[], inLoop: boolean): LoopControl {
     for (const statement of statements) {
-      this.executeStatement(statement);
+      const control = this.executeStatement(statement, inLoop);
+      if (control !== "normal") {
+        return control;
+      }
     }
+    return "normal";
   }
 
   private evaluateExpression(expression: IrExpression): ExecutionValue {

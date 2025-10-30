@@ -111,6 +111,80 @@ describe("executeSclProgram", () => {
     expect(totalValue.ok && totalValue.value).toBe(6);
   });
 
+  it("supports EXIT inside FOR loops", () => {
+    const source = `
+      FUNCTION_BLOCK ForExit
+      VAR
+        index : INT;
+        total : INT;
+      END_VAR
+      BEGIN
+        total := 0;
+        FOR index := 0 TO 5 DO
+          IF index >= 3 THEN
+            EXIT;
+          END_IF;
+          total := total + index;
+        END_FOR;
+      END_FUNCTION_BLOCK
+    `;
+
+    const ast = parseScl(source);
+    const state = createPlcState({
+      dataBlocks: [{ id: 1, size: 8 }],
+    });
+
+    executeSclProgram(ast, state, {
+      symbols: {
+        index: "DB1.DBW0",
+        total: "DB1.DBW2",
+      },
+    });
+
+    const indexValue = state.readInt("DB1.DBW0");
+    expect(indexValue.ok && indexValue.value).toBe(3);
+
+    const totalValue = state.readInt("DB1.DBW2");
+    expect(totalValue.ok && totalValue.value).toBe(3);
+  });
+
+  it("supports CONTINUE inside FOR loops", () => {
+    const source = `
+      FUNCTION_BLOCK ForContinue
+      VAR
+        index : INT;
+        total : INT;
+      END_VAR
+      BEGIN
+        total := 0;
+        FOR index := 0 TO 5 DO
+          IF (index = 1) OR (index = 3) OR (index = 5) THEN
+            CONTINUE;
+          END_IF;
+          total := total + index;
+        END_FOR;
+      END_FUNCTION_BLOCK
+    `;
+
+    const ast = parseScl(source);
+    const state = createPlcState({
+      dataBlocks: [{ id: 1, size: 8 }],
+    });
+
+    executeSclProgram(ast, state, {
+      symbols: {
+        index: "DB1.DBW0",
+        total: "DB1.DBW2",
+      },
+    });
+
+    const indexValue = state.readInt("DB1.DBW0");
+    expect(indexValue.ok && indexValue.value).toBe(6);
+
+    const totalValue = state.readInt("DB1.DBW2");
+    expect(totalValue.ok && totalValue.value).toBe(6);
+  });
+
   it("executes CASE selectors with ELSE branch to drive outputs", () => {
     const source = `
       FUNCTION_BLOCK ModeSwitcher
@@ -188,6 +262,46 @@ describe("executeSclProgram", () => {
     expect(runWithMode(7)).toBe(3);
   });
 
+  it("supports EXIT and CONTINUE inside WHILE loops", () => {
+    const source = `
+      FUNCTION_BLOCK WhileControl
+      VAR
+        idx : INT;
+        hits : INT;
+      END_VAR
+      BEGIN
+        WHILE idx < 10 DO
+          idx := idx + 1;
+          IF idx < 4 THEN
+            CONTINUE;
+          END_IF;
+          hits := hits + 1;
+          IF hits >= 2 THEN
+            EXIT;
+          END_IF;
+        END_WHILE;
+      END_FUNCTION_BLOCK
+    `;
+
+    const ast = parseScl(source);
+    const state = createPlcState({
+      dataBlocks: [{ id: 1, size: 8 }],
+    });
+
+    executeSclProgram(ast, state, {
+      symbols: {
+        idx: "DB1.DBW0",
+        hits: "DB1.DBW2",
+      },
+    });
+
+    const idxValue = state.readInt("DB1.DBW0");
+    expect(idxValue.ok && idxValue.value).toBe(5);
+
+    const hitsValue = state.readInt("DB1.DBW2");
+    expect(hitsValue.ok && hitsValue.value).toBe(2);
+  });
+
   it("enforces loop iteration guard", () => {
     const source = `
       FUNCTION_BLOCK Infinite
@@ -242,5 +356,25 @@ describe("executeSclProgram", () => {
         },
       })
     ).toThrow(SclEmulatorBuildError);
+  });
+
+  it("throws a runtime error when EXIT is used outside a loop", () => {
+    const source = `
+      FUNCTION_BLOCK InvalidExit
+      BEGIN
+        EXIT;
+      END_FUNCTION_BLOCK
+    `;
+
+    const ast = parseScl(source);
+    const state = createPlcState({
+      dataBlocks: [{ id: 1, size: 1 }],
+    });
+
+    expect(() =>
+      executeSclProgram(ast, state, {
+        symbols: {},
+      })
+    ).toThrow(SclEmulatorRuntimeError);
   });
 });
