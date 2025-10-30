@@ -1,0 +1,38 @@
+{
+  "name": "scl-emulator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Core Siemens SCL emulator toolkit with parsing and execution primitives.",
+  "type": "module",
+  "scripts": {
+    "antlr:generate": "rimraf src/generated && antlr-ng -Dlanguage=TypeScript -v true -l false -o src/generated Siemens-SCL-Antlr-Grammar/scl.g4",
+    "prebuild": "pnpm run antlr:generate",
+    "build": "tsc -p tsconfig.build.json",
+    "pretest": "pnpm run antlr:generate",
+    "test": "vitest run",
+    "prelint": "pnpm run antlr:generate",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "scl",
+    "plc",
+    "emulator",
+    "antlr",
+    "parser"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "antlr4ng": "^3.0.16"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@types/node": "^20.14.0",
+    "antlr-ng": "^1.0.10",
+    "eslint": "^9.9.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
+  }
+}
