@@ -1,19 +1,82 @@
 export type PlcAreaKind = "I" | "Q" | "M";
-export type PlcRegionKind = PlcAreaKind | "DB";
+
+export type PlcValueType =
+  | "BOOL"
+  | "BYTE"
+  | "WORD"
+  | "DWORD"
+  | "SINT"
+  | "INT"
+  | "DINT"
+  | "LINT"
+  | "REAL"
+  | "LREAL"
+  | "TIME"
+  | "DATE"
+  | "TOD"
+  | "STRING";
 
 export interface PlcAreaConfig {
   size: number;
 }
 
-export interface PlcDataBlockConfig extends PlcAreaConfig {
-  id: number;
+export interface OptimizedFbInstanceDefinition {
+  /** Canonical FB instance name (case preserved). */
+  name: string;
+  /** Declared FB type that provides the member layout. */
+  type: string;
+}
+
+export interface OptimizedFbTypeDefinition {
+  /** Declarative member definitions for this FB type. */
+  fields: OptimizedDbFieldDefinition[];
+}
+
+export interface OptimizedDbConfiguration {
+  /** Top-level FB instances to provision into the PLC state. */
+  instances: OptimizedFbInstanceDefinition[];
+  /** FB type declarations keyed by type identifier. */
+  types: Record<string, OptimizedFbTypeDefinition>;
+}
+
+export type OptimizedDbFieldDefinition =
+  | OptimizedDbScalarFieldDefinition
+  | OptimizedDbStructFieldDefinition
+  | OptimizedDbArrayFieldDefinition
+  | OptimizedDbFbFieldDefinition;
+
+export interface OptimizedDbScalarFieldDefinition {
+  kind: "scalar";
+  name: string;
+  dataType: PlcValueType;
+  defaultValue?: unknown;
+  stringLength?: number;
+}
+
+export interface OptimizedDbStructFieldDefinition {
+  kind: "struct";
+  name: string;
+  fields: OptimizedDbFieldDefinition[];
+}
+
+export interface OptimizedDbArrayFieldDefinition {
+  kind: "array";
+  name: string;
+  length: number;
+  element: OptimizedDbFieldDefinition;
+}
+
+export interface OptimizedDbFbFieldDefinition {
+  kind: "fb";
+  name: string;
+  type: string;
 }
 
 export interface PlcStateConfig {
   inputs?: PlcAreaConfig;
   outputs?: PlcAreaConfig;
   flags?: PlcAreaConfig;
-  dataBlocks?: PlcDataBlockConfig[];
+  optimizedDataBlocks?: OptimizedDbConfiguration;
 }
 
 export enum PlcErrorCode {
@@ -21,9 +84,11 @@ export enum PlcErrorCode {
   OutOfRange = "out_of_range",
   AlignmentError = "alignment_error",
   TypeMismatch = "type_mismatch",
-  UnknownDataBlock = "unknown_data_block",
-  UninitializedArea = "uninitialized_area",
   InvalidConfig = "invalid_config",
+  UnknownFbInstance = "unknown_fb_instance",
+  UnknownSymbol = "unknown_symbol",
+  InvalidSymbolPath = "invalid_symbol_path",
+  UninitializedArea = "uninitialized_area",
 }
 
 export interface PlcError {
@@ -47,12 +112,24 @@ export interface PlcFailure {
 
 export type PlcVoidResult = PlcResult<void>;
 
-export type PlcSnapshot = {
+export type PlcRegionDescriptor = PlcAreaRegionDescriptor | PlcDbRegionDescriptor;
+
+export interface PlcAreaRegionDescriptor {
+  area: PlcAreaKind;
+}
+
+export interface PlcDbRegionDescriptor {
+  area: "DB";
+  /** Canonical FB instance path (dot/bracket notation). */
+  instancePath: string;
+}
+
+export interface PlcSnapshot {
   inputs: number[];
   outputs: number[];
   flags: number[];
-  dataBlocks: Record<number, number[]>;
-};
+  dbSymbols: Record<string, unknown>;
+}
 
 export interface PlcDiffEntry {
   offset: number;
@@ -60,25 +137,36 @@ export interface PlcDiffEntry {
   current: number;
 }
 
+export interface PlcSymbolDiffEntry {
+  path: string;
+  previous: unknown;
+  current: unknown;
+}
+
 export interface PlcStateDiff {
   inputs: PlcDiffEntry[];
   outputs: PlcDiffEntry[];
   flags: PlcDiffEntry[];
-  dataBlocks: Record<number, PlcDiffEntry[]>;
+  dbSymbols: PlcSymbolDiffEntry[];
 }
 
-export type PlcRegionDescriptor =
-  | { area: PlcAreaKind }
-  | { area: "DB"; dbNumber: number };
+export type PlcStateChange = PlcAreaStateChange | PlcDbStateChange;
 
-export interface PlcStateChange {
-  region: PlcRegionDescriptor;
+export interface PlcAreaStateChange {
+  region: PlcAreaRegionDescriptor;
   diff: PlcDiffEntry[];
+}
+
+export interface PlcDbStateChange {
+  region: PlcDbRegionDescriptor;
+  diff: PlcSymbolDiffEntry[];
 }
 
 export type PlcStateChangeListener = (change: PlcStateChange) => void;
 
-export type PlcAreaChangeListener = (diff: PlcDiffEntry[]) => void;
+export type PlcAreaChangeListener = (
+  diff: PlcDiffEntry[] | PlcSymbolDiffEntry[]
+) => void;
 
 export interface PlcStringReadOptions {
   /** Optional override for maximum number of characters to read (default 254). */
@@ -166,7 +254,7 @@ export interface PlcState {
 
   /** Subscribe to changes across all areas. Returns an unsubscribe callback. */
   onStateChange(listener: PlcStateChangeListener): () => void;
-  /** Subscribe to changes for a specific area (I, Q, M, or DBn). Returns an unsubscribe callback. */
+  /** Subscribe to changes for a specific area (I, Q, M, or DB instance). Returns an unsubscribe callback. */
   onAreaChange(region: PlcRegionDescriptor, listener: PlcAreaChangeListener): () => void;
 }
 
@@ -177,6 +265,27 @@ export interface PlcAddressDescriptor {
 }
 
 export type PlcAddressNotation = "BIT" | "BYTE" | "WORD" | "DWORD";
+
+export interface FbSymbolDatapoint {
+  /** Canonical FB instance path including nested prefixes and array indices. */
+  path: string;
+  /** Original declaration-cased field name (last segment of the path). */
+  fieldName: string;
+  /** Canonical FB instance path for the owning instance (without the field segment). */
+  fbInstancePath: string;
+  /** FB type that declared the owning instance. */
+  fbType: string;
+  /** Resolved data type identifier. */
+  dataType: PlcValueType;
+  /** Declaration-cased canonical path for display. */
+  declarationPath: string;
+  /** Optional declared default value. */
+  defaultValue?: unknown;
+  /** Optional declared string length when `dataType` is `STRING`. */
+  stringLength?: number;
+  /** Current runtime value stored in the PLC state. */
+  currentValue: unknown;
+}
 
 export function createError(
   code: PlcErrorCode,

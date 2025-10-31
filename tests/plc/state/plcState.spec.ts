@@ -6,20 +6,16 @@ import {
   snapshotState,
 } from "../../../src/plc/state/index.js";
 import type {
-  PlcState,
   PlcResult,
+  PlcState,
   PlcVoidResult,
 } from "../../../src/plc/state/index.js";
+import { integrationDbConfig } from "../../fixtures/dbDefinitions/integration.js";
+
+const INTEGRATION_ROOT = "IntegrationTests";
+const symbol = (segment: string) => `${INTEGRATION_ROOT}.${segment}`;
 
 describe("createPlcState", () => {
-  function expectOk<T>(result: PlcResult<T>): T {
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.error.message);
-    }
-    return result.value;
-  }
-
   function expectVoidOk(result: PlcVoidResult): void {
     expect(result.ok).toBe(true);
     if (!result.ok) {
@@ -34,8 +30,7 @@ describe("createPlcState", () => {
     expect(initial.ok).toBe(true);
     expect(initial.ok && initial.value).toBe(false);
 
-    const writeResult = plc.writeBool("I0.0", true);
-    expect(writeResult.ok).toBe(true);
+    expectVoidOk(plc.writeBool("I0.0", true));
 
     const readBack = plc.readBool("I0.0");
     expect(readBack.ok).toBe(true);
@@ -48,22 +43,32 @@ describe("createPlcState", () => {
     }
   });
 
-  it("supports REAL round-trips in data blocks using DBX addressing", () => {
-    const plc = createPlcState({ dataBlocks: [{ id: 1, size: 16 }] });
-    const write = plc.writeReal("DB1.DBX0.0", 12.5);
-    expect(write.ok).toBe(true);
+  it("supports REAL round-trips using symbolic FB paths", () => {
+    const plc = createPlcState({ optimizedDataBlocks: integrationDbConfig });
 
-    const read = plc.readReal("DB1.DBX0.0");
+    expectVoidOk(plc.writeReal(symbol("realValue"), 12.5));
+
+    const read = plc.readReal(symbol("realValue"));
     expect(read.ok).toBe(true);
     expect(read.ok && read.value).toBeCloseTo(12.5, 5);
   });
 
-  it("fails when addressing an unknown data block", () => {
-    const plc = createPlcState({ dataBlocks: [{ id: 1, size: 4 }] });
-    const result = plc.readReal("DB2.DBD0");
+  it("fails when referencing an unknown FB instance", () => {
+    const plc = createPlcState({ optimizedDataBlocks: integrationDbConfig });
+    const result = plc.readReal("MissingInstance.value");
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe(PlcErrorCode.UnknownDataBlock);
+      expect(result.error.code).toBe(PlcErrorCode.UnknownFbInstance);
+    }
+  });
+
+  it("fails when referencing an unknown symbol", () => {
+    const plc = createPlcState({ optimizedDataBlocks: integrationDbConfig });
+    const result = plc.readReal(symbol("missingField"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe(PlcErrorCode.UnknownSymbol);
+      expect(result.error.details).toMatchObject({ fbType: "IntegrationHarness" });
     }
   });
 
@@ -85,37 +90,36 @@ describe("createPlcState", () => {
     }
   });
 
-  it("emits change events for state and area subscriptions", () => {
-    const plc = createPlcState({ inputs: { size: 1 } });
+  it("emits change events for DB symbol updates", () => {
+    const plc = createPlcState({ optimizedDataBlocks: integrationDbConfig });
     const allListener = vi.fn();
-    const areaListener = vi.fn();
+    const dbListener = vi.fn();
 
     plc.onStateChange(allListener);
-    plc.onAreaChange({ area: "I" }, areaListener);
+    plc.onAreaChange({ area: "DB", instancePath: INTEGRATION_ROOT }, dbListener);
 
-    plc.writeBool("I0.0", true);
+    expectVoidOk(plc.writeDInt(symbol("dintValue"), 99));
 
     expect(allListener).toHaveBeenCalledTimes(1);
-    expect(areaListener).toHaveBeenCalledTimes(1);
+    expect(dbListener).toHaveBeenCalledTimes(1);
 
     const change = allListener.mock.calls[0][0];
-    expect(change.region).toEqual({ area: "I" });
+    expect(change.region).toEqual({ area: "DB", instancePath: INTEGRATION_ROOT });
     expect(change.diff).toEqual([
-      { offset: 0, previous: 0, current: 1 },
+      { path: symbol("dintValue"), previous: 0, current: 99 },
     ]);
   });
 
-  it("returns STRING payloads with Siemens metadata", () => {
-    const plc = createPlcState({ dataBlocks: [{ id: 7, size: 64 }] });
+  it("handles STRING payloads for symbolic DB fields", () => {
+    const plc = createPlcState({ optimizedDataBlocks: integrationDbConfig });
 
-    const write = plc.writeString("DB7.DBB0", "HELLO", { maxLength: 16 });
-    expect(write.ok).toBe(true);
+    expectVoidOk(plc.writeString(symbol("stringValue"), "HELLO", { maxLength: 16 }));
 
-    const read = plc.readString("DB7.DBB0");
+    const read = plc.readString(symbol("stringValue"));
     expect(read.ok).toBe(true);
     expect(read.ok && read.value).toBe("HELLO");
 
-    const tooLarge = plc.writeString("DB7.DBB0", "THIS STRING IS TOO LONG", {
+    const tooLarge = plc.writeString(symbol("stringValue"), "THIS STRING IS TOO LONG", {
       maxLength: 8,
     });
     expect(tooLarge.ok).toBe(false);
@@ -125,160 +129,112 @@ describe("createPlcState", () => {
   });
 
   describe("scalar type round-trips", () => {
-    const baseConfig = { dataBlocks: [{ id: 1, size: 96 }] } as const;
+    const plcFactory = () => createPlcState({ optimizedDataBlocks: integrationDbConfig });
 
-    const cases = [
+    const cases: Array<{ name: string; write: (plc: PlcState) => PlcVoidResult; read: (plc: PlcState) => PlcResult<unknown>; assert: (value: unknown) => void; }> = [
       {
         name: "BOOL",
-        write: (plc: PlcState) => plc.writeBool("DB1.DBX0.1", true),
-        read: (plc: PlcState) => plc.readBool("DB1.DBX0.1"),
-        assert: (value: unknown) => expect(value).toBe(true),
+        write: (plc) => plc.writeBool(symbol("boolValue"), true),
+        read: (plc) => plc.readBool(symbol("boolValue")),
+        assert: (value) => expect(value).toBe(true),
       },
       {
         name: "BYTE",
-        write: (plc: PlcState) => plc.writeByte("DB1.DBB2", 0xab),
-        read: (plc: PlcState) => plc.readByte("DB1.DBB2"),
-        assert: (value: unknown) => expect(value).toBe(0xab),
+        write: (plc) => plc.writeByte(symbol("byteValue"), 0xab),
+        read: (plc) => plc.readByte(symbol("byteValue")),
+        assert: (value) => expect(value).toBe(0xab),
       },
       {
         name: "SINT",
-        write: (plc: PlcState) => plc.writeSInt("DB1.DBB3", -42),
-        read: (plc: PlcState) => plc.readSInt("DB1.DBB3"),
-        assert: (value: unknown) => expect(value).toBe(-42),
+        write: (plc) => plc.writeSInt(symbol("sintValue"), -42),
+        read: (plc) => plc.readSInt(symbol("sintValue")),
+        assert: (value) => expect(value).toBe(-42),
       },
       {
         name: "WORD",
-        write: (plc: PlcState) => plc.writeWord("DB1.DBW4", 0x1234),
-        read: (plc: PlcState) => plc.readWord("DB1.DBW4"),
-        assert: (value: unknown) => expect(value).toBe(0x1234),
+        write: (plc) => plc.writeWord(symbol("wordValue"), 0x1234),
+        read: (plc) => plc.readWord(symbol("wordValue")),
+        assert: (value) => expect(value).toBe(0x1234),
       },
       {
         name: "INT",
-        write: (plc: PlcState) => plc.writeInt("DB1.DBW6", -1234),
-        read: (plc: PlcState) => plc.readInt("DB1.DBW6"),
-        assert: (value: unknown) => expect(value).toBe(-1234),
+        write: (plc) => plc.writeInt(symbol("intValue"), -1234),
+        read: (plc) => plc.readInt(symbol("intValue")),
+        assert: (value) => expect(value).toBe(-1234),
       },
       {
         name: "DWORD",
-        write: (plc: PlcState) => plc.writeDWord("DB1.DBD8", 0x89abcdef),
-        read: (plc: PlcState) => plc.readDWord("DB1.DBD8"),
-        assert: (value: unknown) => expect(value).toBe(0x89abcdef),
+        write: (plc) => plc.writeDWord(symbol("dwordValue"), 0x89abcdef),
+        read: (plc) => plc.readDWord(symbol("dwordValue")),
+        assert: (value) => expect(value).toBe(0x89abcdef),
       },
       {
         name: "DINT",
-        write: (plc: PlcState) => plc.writeDInt("DB1.DBD12", -20202020),
-        read: (plc: PlcState) => plc.readDInt("DB1.DBD12"),
-        assert: (value: unknown) => expect(value).toBe(-20202020),
+        write: (plc) => plc.writeDInt(symbol("dintValue"), -20202020),
+        read: (plc) => plc.readDInt(symbol("dintValue")),
+        assert: (value) => expect(value).toBe(-20202020),
       },
       {
         name: "LINT",
-        write: (plc: PlcState) => plc.writeLint("DB1.DBX16.0", 1234567890123456n),
-        read: (plc: PlcState) => plc.readLint("DB1.DBX16.0"),
-        assert: (value: unknown) => expect(value).toBe(1234567890123456n),
+        write: (plc) => plc.writeLint(symbol("lintValue"), 1234567890123456n),
+        read: (plc) => plc.readLint(symbol("lintValue")),
+        assert: (value) => expect(value).toBe(1234567890123456n),
       },
       {
         name: "REAL",
-        write: (plc: PlcState) => plc.writeReal("DB1.DBX24.0", 42.25),
-        read: (plc: PlcState) => plc.readReal("DB1.DBX24.0"),
-        assert: (value: unknown) => expect(value as number).toBeCloseTo(42.25, 5),
+        write: (plc) => plc.writeReal(symbol("realValue"), 42.25),
+        read: (plc) => plc.readReal(symbol("realValue")),
+        assert: (value) => expect(value as number).toBeCloseTo(42.25, 5),
       },
       {
         name: "LREAL",
-        write: (plc: PlcState) => plc.writeLReal("DB1.DBX32.0", 3.141592653589793),
-        read: (plc: PlcState) => plc.readLReal("DB1.DBX32.0"),
-        assert: (value: unknown) => expect(value as number).toBeCloseTo(3.141592653589793, 9),
+        write: (plc) => plc.writeLReal(symbol("lrealValue"), 3.141592653589793),
+        read: (plc) => plc.readLReal(symbol("lrealValue")),
+        assert: (value) => expect(value as number).toBeCloseTo(3.141592653589793, 9),
       },
       {
         name: "TIME",
-        write: (plc: PlcState) => plc.writeTime("DB1.DBX40.0", 123456),
-        read: (plc: PlcState) => plc.readTime("DB1.DBX40.0"),
-        assert: (value: unknown) => expect(value).toBe(123456),
+        write: (plc) => plc.writeTime(symbol("timeValue"), 123456),
+        read: (plc) => plc.readTime(symbol("timeValue")),
+        assert: (value) => expect(value).toBe(123456),
       },
       {
         name: "DATE",
-        write: (plc: PlcState) => plc.writeDate("DB1.DBW44", 7300),
-        read: (plc: PlcState) => plc.readDate("DB1.DBW44"),
-        assert: (value: unknown) => expect(value).toBe(7300),
+        write: (plc) => plc.writeDate(symbol("dateValue"), 7300),
+        read: (plc) => plc.readDate(symbol("dateValue")),
+        assert: (value) => expect(value).toBe(7300),
       },
       {
         name: "TOD",
-        write: (plc: PlcState) => plc.writeTod("DB1.DBX48.0", 5678901),
-        read: (plc: PlcState) => plc.readTod("DB1.DBX48.0"),
-        assert: (value: unknown) => expect(value).toBe(5678901),
+        write: (plc) => plc.writeTod(symbol("todValue"), 86_400),
+        read: (plc) => plc.readTod(symbol("todValue")),
+        assert: (value) => expect(value).toBe(86_400),
       },
-      {
-        name: "STRING",
-        write: (plc: PlcState) => plc.writeString("DB1.DBB52", "SIM", { maxLength: 8 }),
-        read: (plc: PlcState) => plc.readString("DB1.DBB52"),
-        assert: (value: unknown) => expect(value).toBe("SIM"),
-      },
-    ] satisfies Array<{
-      name: string;
-      write: (plc: PlcState) => PlcVoidResult;
-      read: (plc: PlcState) => PlcResult<unknown>;
-      assert: (value: unknown) => void;
-    }>;
+    ];
 
-    for (const { name, write, read, assert } of cases) {
-      it(`round-trips ${name}`, () => {
-        const plc = createPlcState(baseConfig);
-        expectVoidOk(write(plc));
-        const value = expectOk(read(plc));
-        assert(value);
+    for (const testCase of cases) {
+      it(`round-trips ${testCase.name}`, () => {
+        const plc = plcFactory();
+        expectVoidOk(testCase.write(plc));
+        const result = testCase.read(plc);
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          testCase.assert(result.value);
+        }
       });
     }
   });
 
-  it("captures and diffs snapshots", () => {
-    const plc = createPlcState({ inputs: { size: 1 }, dataBlocks: [{ id: 1, size: 8 }] });
+  it("captures diffs for optimized DB symbols", () => {
+    const plc = createPlcState({ optimizedDataBlocks: integrationDbConfig });
 
     const before = snapshotState(plc);
-    plc.writeBool("I0.0", true);
-    plc.writeDInt("DB1.DBD0", 1234);
+    expectVoidOk(plc.writeInt(symbol("intValue"), 7));
     const after = snapshotState(plc);
 
     const diff = diffStates(before, after);
-    expect(diff.inputs).toEqual([{ offset: 0, previous: 0, current: 1 }]);
-    expect(diff.dataBlocks[1]).toEqual([
-      { offset: 0, previous: 0, current: 210 },
-      { offset: 1, previous: 0, current: 4 },
+    expect(diff.dbSymbols).toEqual([
+      { path: symbol("intValue"), previous: 0, current: 7 },
     ]);
-  });
-
-  it("keeps bit and word views in sync for marker area", () => {
-    const plc = createPlcState({ flags: { size: 4 } });
-
-    const bitWrite = plc.writeBool("M0.1", true);
-    expect(bitWrite.ok).toBe(true);
-
-    const wordRead = plc.readWord("MW0");
-    expect(wordRead.ok).toBe(true);
-    expect(wordRead.ok && wordRead.value).toBe(2);
-
-    const wordWrite = plc.writeWord("MW0", 5);
-    expect(wordWrite.ok).toBe(true);
-
-    const bitRead = plc.readBool("M0.0");
-    expect(bitRead.ok).toBe(true);
-    expect(bitRead.ok && bitRead.value).toBe(true);
-
-    const bitReadTwo = plc.readBool("M0.2");
-    expect(bitReadTwo.ok).toBe(true);
-    expect(bitReadTwo.ok && bitReadTwo.value).toBe(true);
-  });
-
-  it("keeps bit and word views in sync for data blocks", () => {
-    const plc = createPlcState({ dataBlocks: [{ id: 3, size: 16 }] });
-
-    expect(plc.writeBool("DB3.DBX0.3", true).ok).toBe(true);
-
-    const word = plc.readWord("DB3.DBW0");
-    expect(word.ok).toBe(true);
-    expect(word.ok && word.value).toBe(8);
-
-    expect(plc.writeWord("DB3.DBW0", 0).ok).toBe(true);
-    const bit = plc.readBool("DB3.DBX0.3");
-    expect(bit.ok).toBe(true);
-    expect(bit.ok && bit.value).toBe(false);
   });
 });

@@ -53,7 +53,7 @@
 
 - `src/plc/state/types.ts`: shared TypeScript types for configurations, supported data types, address tokens, and snapshot shapes.
 - `src/plc/state/address.ts`: parsers/formatters translating string addresses (`I0.1`, `DB1.DBB4`, etc.) into internal descriptors.
-- `src/plc/state/areas/`: folder housing implementations for each memory area (`inputs.ts`, `outputs.ts`, `flags.ts`, `dataBlocks.ts`) backed by typed arrays or buffers.
+- `src/plc/state/areas/`: folder housing implementations for I/Q/M memory areas (`bitArea.ts`, `wordArea.ts`) backed by typed arrays, plus `optimizedDb.ts` for FB symbol registration.
 - `src/plc/state/plcState.ts`: orchestrates area instances, exposes public getters/setters, manages subscriptions, and produces snapshots/diffs.
 - `src/plc/state/index.ts`: exports public API surface and helper utilities for consumers.
 - `tests/plc/state/*.spec.ts`: Vitest suites verifying initialization, read/write correctness, validation errors, subscriptions, and snapshot/diff semantics.

@@ -1,7 +1,8 @@
 import { parseBitAddress, parseByteAddress, inspectAddress } from "./address.js";
 import type { ParsedAddress } from "./address.js";
-import { DbArea } from "./areas/dbArea.js";
 import { WordArea } from "./areas/wordArea.js";
+import { OptimizedDbStore } from "./optimizedDb.js";
+import type { SymbolDescriptor, SymbolFilter, SymbolWriteResult } from "./optimizedDb.js";
 import {
   PlcErrorCode,
   createError,
@@ -9,8 +10,10 @@ import {
   ok,
 } from "./types.js";
 import type {
+  FbSymbolDatapoint,
   PlcAreaChangeListener,
   PlcDiffEntry,
+  PlcError,
   PlcRegionDescriptor,
   PlcResult,
   PlcSnapshot,
@@ -21,11 +24,17 @@ import type {
   PlcStateDiff,
   PlcStringReadOptions,
   PlcStringWriteOptions,
+  PlcSymbolDiffEntry,
+  PlcValueType,
   PlcVoidResult,
 } from "./types.js";
 
+const ABSOLUTE_AREA_PATTERN = /^(?:[IQM](?:[BWD])?\d+(?:\.\d)?)$/i;
+
 function regionKey(region: PlcRegionDescriptor): string {
-  return region.area === "DB" ? `DB:${region.dbNumber}` : region.area;
+  return region.area === "DB"
+    ? `DB:${region.instancePath.toLowerCase()}`
+    : region.area;
 }
 
 function computeDiffEntries(
@@ -56,7 +65,7 @@ export class PlcStateImpl implements PlcState {
 
   private readonly flags?: WordArea;
 
-  private readonly dataBlocks: DbArea;
+  private readonly optimizedDb: OptimizedDbStore;
 
   private readonly stateListeners = new Set<PlcStateChangeListener>();
 
@@ -72,12 +81,15 @@ export class PlcStateImpl implements PlcState {
     this.flags = config.flags
       ? new WordArea(config.flags.size, "Flags (M)")
       : undefined;
-    this.dataBlocks = new DbArea(config.dataBlocks ?? []);
+    this.optimizedDb = new OptimizedDbStore(config.optimizedDataBlocks);
   }
 
   readBool(address: string) {
-    return this.readWith(address, () => parseBitAddress(address), (area, descriptor) =>
-      area.readBit(descriptor.byteOffset, descriptor.bitOffset ?? 0)
+    return this.readWith(
+      address,
+      () => parseBitAddress(address),
+      (area, descriptor) => area.readBit(descriptor.byteOffset, descriptor.bitOffset ?? 0),
+      "BOOL"
     );
   }
 
@@ -96,8 +108,11 @@ export class PlcStateImpl implements PlcState {
   }
 
   readByte(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 1 }), (area, descriptor) =>
-      area.readUInt8(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 1 }),
+      (area, descriptor) => area.readUInt8(descriptor.byteOffset),
+      "BYTE"
     );
   }
 
@@ -112,14 +127,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 1, undefined, (area, descriptor) => {
-      area.writeUInt8(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      1,
+      undefined,
+      (area, descriptor) => {
+        area.writeUInt8(descriptor.byteOffset, value);
+      },
+      "BYTE",
+      value
+    );
   }
 
   readSInt(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 1 }), (area, descriptor) =>
-      area.readInt8(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 1 }),
+      (area, descriptor) => area.readInt8(descriptor.byteOffset),
+      "SINT"
     );
   }
 
@@ -134,14 +159,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 1, undefined, (area, descriptor) => {
-      area.writeInt8(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      1,
+      undefined,
+      (area, descriptor) => {
+        area.writeInt8(descriptor.byteOffset, value);
+      },
+      "SINT",
+      value
+    );
   }
 
   readWord(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 2, alignment: 2 }), (area, descriptor) =>
-      area.readUInt16(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 2, alignment: 2 }),
+      (area, descriptor) => area.readUInt16(descriptor.byteOffset),
+      "WORD"
     );
   }
 
@@ -156,14 +191,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 2, 2, (area, descriptor) => {
-      area.writeUInt16(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      2,
+      2,
+      (area, descriptor) => {
+        area.writeUInt16(descriptor.byteOffset, value);
+      },
+      "WORD",
+      value
+    );
   }
 
   readInt(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 2, alignment: 2 }), (area, descriptor) =>
-      area.readInt16(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 2, alignment: 2 }),
+      (area, descriptor) => area.readInt16(descriptor.byteOffset),
+      "INT"
     );
   }
 
@@ -178,14 +223,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 2, 2, (area, descriptor) => {
-      area.writeInt16(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      2,
+      2,
+      (area, descriptor) => {
+        area.writeInt16(descriptor.byteOffset, value);
+      },
+      "INT",
+      value
+    );
   }
 
   readDWord(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 4, alignment: 4 }), (area, descriptor) =>
-      area.readUInt32(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 4, alignment: 4 }),
+      (area, descriptor) => area.readUInt32(descriptor.byteOffset),
+      "DWORD"
     );
   }
 
@@ -200,14 +255,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 4, 4, (area, descriptor) => {
-      area.writeUInt32(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      4,
+      4,
+      (area, descriptor) => {
+        area.writeUInt32(descriptor.byteOffset, value);
+      },
+      "DWORD",
+      value
+    );
   }
 
   readDInt(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 4, alignment: 4 }), (area, descriptor) =>
-      area.readInt32(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 4, alignment: 4 }),
+      (area, descriptor) => area.readInt32(descriptor.byteOffset),
+      "DINT"
     );
   }
 
@@ -222,14 +287,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 4, 4, (area, descriptor) => {
-      area.writeInt32(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      4,
+      4,
+      (area, descriptor) => {
+        area.writeInt32(descriptor.byteOffset, value);
+      },
+      "DINT",
+      value
+    );
   }
 
   readLint(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 8, alignment: 8 }), (area, descriptor) =>
-      area.readBigInt64(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 8, alignment: 8 }),
+      (area, descriptor) => area.readBigInt64(descriptor.byteOffset),
+      "LINT"
     );
   }
 
@@ -244,14 +319,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 8, 8, (area, descriptor) => {
-      area.writeBigInt64(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      8,
+      8,
+      (area, descriptor) => {
+        area.writeBigInt64(descriptor.byteOffset, value);
+      },
+      "LINT",
+      value
+    );
   }
 
   readReal(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 4, alignment: 4 }), (area, descriptor) =>
-      area.readFloat32(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 4, alignment: 4 }),
+      (area, descriptor) => area.readFloat32(descriptor.byteOffset),
+      "REAL"
     );
   }
 
@@ -266,14 +351,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 4, 4, (area, descriptor) => {
-      area.writeFloat32(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      4,
+      4,
+      (area, descriptor) => {
+        area.writeFloat32(descriptor.byteOffset, value);
+      },
+      "REAL",
+      value
+    );
   }
 
   readLReal(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 8, alignment: 8 }), (area, descriptor) =>
-      area.readFloat64(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 8, alignment: 8 }),
+      (area, descriptor) => area.readFloat64(descriptor.byteOffset),
+      "LREAL"
     );
   }
 
@@ -288,14 +383,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 8, 8, (area, descriptor) => {
-      area.writeFloat64(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      8,
+      8,
+      (area, descriptor) => {
+        area.writeFloat64(descriptor.byteOffset, value);
+      },
+      "LREAL",
+      value
+    );
   }
 
   readTime(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 4, alignment: 4 }), (area, descriptor) =>
-      area.readInt32(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 4, alignment: 4 }),
+      (area, descriptor) => area.readInt32(descriptor.byteOffset),
+      "TIME"
     );
   }
 
@@ -310,14 +415,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 4, 4, (area, descriptor) => {
-      area.writeInt32(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      4,
+      4,
+      (area, descriptor) => {
+        area.writeInt32(descriptor.byteOffset, value);
+      },
+      "TIME",
+      value
+    );
   }
 
   readDate(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 2, alignment: 2 }), (area, descriptor) =>
-      area.readUInt16(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 2, alignment: 2 }),
+      (area, descriptor) => area.readUInt16(descriptor.byteOffset),
+      "DATE"
     );
   }
 
@@ -332,14 +447,24 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 2, 2, (area, descriptor) => {
-      area.writeUInt16(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      2,
+      2,
+      (area, descriptor) => {
+        area.writeUInt16(descriptor.byteOffset, value);
+      },
+      "DATE",
+      value
+    );
   }
 
   readTod(address: string) {
-    return this.readWith(address, () => parseByteAddress(address, { byteLength: 4, alignment: 4 }), (area, descriptor) =>
-      area.readUInt32(descriptor.byteOffset)
+    return this.readWith(
+      address,
+      () => parseByteAddress(address, { byteLength: 4, alignment: 4 }),
+      (area, descriptor) => area.readUInt32(descriptor.byteOffset),
+      "TOD"
     );
   }
 
@@ -354,14 +479,33 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeNumeric(address, 4, 4, (area, descriptor) => {
-      area.writeUInt32(descriptor.byteOffset, value);
-    });
+    return this.writeNumeric(
+      address,
+      4,
+      4,
+      (area, descriptor) => {
+        area.writeUInt32(descriptor.byteOffset, value);
+      },
+      "TOD",
+      value
+    );
   }
 
   readString(address: string, options?: PlcStringReadOptions) {
     const descriptorResult = inspectAddress(address);
     if (!descriptorResult.ok) {
+      if (this.shouldAttemptSymbolFallback(address, descriptorResult.error)) {
+        const symbolResult = this.optimizedDb.read(address, "STRING");
+        if (!symbolResult.ok) {
+          return symbolResult;
+        }
+        let value = symbolResult.value.value as string;
+        if (options?.maxLength !== undefined) {
+          const maxLength = Math.min(Math.max(options.maxLength, 0), 254);
+          value = value.slice(0, maxLength);
+        }
+        return ok(value);
+      }
       return descriptorResult;
     }
     const descriptor = descriptorResult.value;
@@ -428,7 +572,14 @@ export class PlcStateImpl implements PlcState {
         )
       );
     }
-    return this.writeStringInternal(address, value, options, true);
+    const descriptorResult = inspectAddress(address);
+    if (descriptorResult.ok) {
+      return this.writeStringInternal(address, descriptorResult.value, value, options, true);
+    }
+    if (this.shouldAttemptSymbolFallback(address, descriptorResult.error)) {
+      return this.writeStringSymbol(address, value, options);
+    }
+    return descriptorResult;
   }
 
   snapshot(): PlcSnapshot {
@@ -436,8 +587,16 @@ export class PlcStateImpl implements PlcState {
       inputs: this.inputs?.snapshot() ?? [],
       outputs: this.outputs?.snapshot() ?? [],
       flags: this.flags?.snapshot() ?? [],
-      dataBlocks: this.dataBlocks.snapshot(),
+      dbSymbols: this.optimizedDb.snapshot(),
     };
+  }
+
+  listOptimizedSymbols(filter?: SymbolFilter): FbSymbolDatapoint[] {
+    return this.optimizedDb.listSymbols(filter);
+  }
+
+  resolveOptimizedSymbol(path: string, dataType: PlcValueType): PlcResult<SymbolDescriptor> {
+    return this.optimizedDb.describe(path, dataType);
   }
 
   onStateChange(listener: PlcStateChangeListener): () => void {
@@ -462,13 +621,71 @@ export class PlcStateImpl implements PlcState {
     };
   }
 
+  private shouldAttemptSymbolFallback(address: string, error: PlcError): boolean {
+    if (error.code !== PlcErrorCode.InvalidAddress) {
+      return false;
+    }
+    const trimmed = address.trim();
+    if (!trimmed) {
+      return false;
+    }
+    const upper = trimmed.toUpperCase();
+    if (upper.startsWith("DB")) {
+      return false;
+    }
+    if (ABSOLUTE_AREA_PATTERN.test(upper)) {
+      return false;
+    }
+    return true;
+  }
+
+  private readSymbol<T>(address: string, dataType: PlcValueType): PlcResult<T> {
+    const result = this.optimizedDb.read(address, dataType);
+    if (!result.ok) {
+      return result;
+    }
+    return ok(result.value.value as T);
+  }
+
+  private writeSymbol(
+    address: string,
+    dataType: PlcValueType,
+    rawValue: unknown
+  ): PlcVoidResult {
+    const result = this.optimizedDb.write(address, dataType, rawValue);
+    if (!result.ok) {
+      return result;
+    }
+    if (result.value.changed) {
+      this.dispatchSymbolChange(result.value);
+    }
+    return ok(undefined);
+  }
+
+  private dispatchSymbolChange(write: SymbolWriteResult): void {
+    const diff: PlcSymbolDiffEntry = {
+      path: write.descriptor.canonicalPath,
+      previous: write.previous,
+      current: write.current,
+    };
+    const region: PlcRegionDescriptor = {
+      area: "DB",
+      instancePath: write.descriptor.fbInstancePath,
+    };
+    this.dispatchChange(region, [diff]);
+  }
+
   private readWith<T>(
     address: string,
     parser: () => PlcResult<ParsedAddress>,
-    reader: (area: WordArea, descriptor: ParsedAddress) => T
+    reader: (area: WordArea, descriptor: ParsedAddress) => T,
+    symbolType?: PlcValueType
   ): PlcResult<T> {
     const descriptorResult = parser();
     if (!descriptorResult.ok) {
+      if (symbolType && this.shouldAttemptSymbolFallback(address, descriptorResult.error)) {
+        return this.readSymbol(address, symbolType);
+      }
       return descriptorResult;
     }
     const descriptor = descriptorResult.value;
@@ -493,7 +710,9 @@ export class PlcStateImpl implements PlcState {
       (area, descriptor) => {
         area.writeBit(descriptor.byteOffset, descriptor.bitOffset ?? 0, value);
       },
-      notify
+      notify,
+      "BOOL",
+      value
     );
   }
 
@@ -501,14 +720,18 @@ export class PlcStateImpl implements PlcState {
     address: string,
     byteLength: number,
     alignment: number | undefined,
-    mutator: (area: WordArea, descriptor: ParsedAddress) => void
+    mutator: (area: WordArea, descriptor: ParsedAddress) => void,
+    symbolType: PlcValueType,
+    rawValue: unknown
   ): PlcVoidResult {
     return this.writeWith(
       address,
       () => parseByteAddress(address, { byteLength, alignment }),
       byteLength,
       mutator,
-      true
+      true,
+      symbolType,
+      rawValue
     );
   }
 
@@ -517,10 +740,15 @@ export class PlcStateImpl implements PlcState {
     parser: () => PlcResult<ParsedAddress>,
     byteLength: number,
     mutator: (area: WordArea, descriptor: ParsedAddress) => PlcVoidResult | void,
-    notify: boolean
+    notify: boolean,
+    symbolType?: PlcValueType,
+    rawValue?: unknown
   ): PlcVoidResult {
     const descriptorResult = parser();
     if (!descriptorResult.ok) {
+      if (symbolType && this.shouldAttemptSymbolFallback(address, descriptorResult.error)) {
+        return this.writeSymbol(address, symbolType, rawValue);
+      }
       return descriptorResult;
     }
     const descriptor = descriptorResult.value;
@@ -548,15 +776,11 @@ export class PlcStateImpl implements PlcState {
 
   private writeStringInternal(
     address: string,
+    descriptor: ParsedAddress,
     value: string,
     options: PlcStringWriteOptions | undefined,
     notify: boolean
   ): PlcVoidResult {
-    const descriptorResult = inspectAddress(address);
-    if (!descriptorResult.ok) {
-      return descriptorResult;
-    }
-    const descriptor = descriptorResult.value;
     if (descriptor.bitOffset !== undefined && descriptor.bitOffset !== 0) {
       return fail(
         createError(
@@ -626,20 +850,45 @@ export class PlcStateImpl implements PlcState {
     return ok(undefined);
   }
 
-  private resolveArea(region: PlcRegionDescriptor): PlcResult<WordArea> {
-    if (region.area === "DB") {
-      const block = this.dataBlocks.getBlock(region.dbNumber);
-      if (!block) {
+  private writeStringSymbol(
+    address: string,
+    value: string,
+    options: PlcStringWriteOptions | undefined
+  ): PlcVoidResult {
+    const metadata = this.optimizedDb.read(address, "STRING");
+    if (!metadata.ok) {
+      return metadata;
+    }
+    const descriptor = metadata.value.descriptor;
+    const declared = descriptor.stringLength ?? 254;
+    const optionMax = options?.maxLength !== undefined ? Math.max(options.maxLength, 0) : declared;
+    const allowed = Math.min(declared, optionMax, 254);
+    let nextValue = value;
+    if (nextValue.length > allowed) {
+      if (options?.truncate) {
+        nextValue = nextValue.slice(0, allowed);
+      } else {
         return fail(
           createError(
-            PlcErrorCode.UnknownDataBlock,
-            `Data block DB${region.dbNumber} is not configured`,
-            undefined,
-            { dbNumber: region.dbNumber }
+            PlcErrorCode.OutOfRange,
+            `STRING value exceeds allowed length ${allowed}`,
+            address,
+            { valueLength: nextValue.length, capacity: allowed }
           )
         );
       }
-      return ok(block);
+    }
+    return this.writeSymbol(address, "STRING", nextValue);
+  }
+
+  private resolveArea(region: PlcRegionDescriptor): PlcResult<WordArea> {
+    if (region.area === "DB") {
+      return fail(
+        createError(
+          PlcErrorCode.InvalidAddress,
+          "Symbolic DB addresses must be accessed via FB instance paths"
+        )
+      );
     }
 
     switch (region.area) {
@@ -687,8 +936,14 @@ export class PlcStateImpl implements PlcState {
     throw error;
   }
 
-  private dispatchChange(region: PlcRegionDescriptor, diff: PlcDiffEntry[]): void {
-    const payload: PlcStateChange = { region, diff };
+  private dispatchChange(
+    region: PlcRegionDescriptor,
+    diff: PlcDiffEntry[] | PlcSymbolDiffEntry[]
+  ): void {
+    const payload: PlcStateChange =
+      region.area === "DB"
+        ? { region, diff: diff as PlcSymbolDiffEntry[] }
+        : { region, diff: diff as PlcDiffEntry[] };
     for (const listener of this.stateListeners) {
       listener(payload);
     }
@@ -724,16 +979,34 @@ export function diffStates(previous: PlcSnapshot, next: PlcSnapshot): PlcStateDi
   const outputs = computeDiffEntries(0, Uint8Array.from(previous.outputs), Uint8Array.from(next.outputs));
   const flags = computeDiffEntries(0, Uint8Array.from(previous.flags), Uint8Array.from(next.flags));
 
-  const blockDiffs: Record<number, PlcDiffEntry[]> = {};
-  const blockIds = new Set<number>([...Object.keys(previous.dataBlocks).map(Number), ...Object.keys(next.dataBlocks).map(Number)]);
-  for (const blockId of blockIds) {
-    const before = Uint8Array.from(previous.dataBlocks[blockId] ?? []);
-    const after = Uint8Array.from(next.dataBlocks[blockId] ?? []);
-    const diff = computeDiffEntries(0, before, after);
-    if (diff.length > 0) {
-      blockDiffs[blockId] = diff;
+  const symbolDiffs: PlcSymbolDiffEntry[] = [];
+  const symbolPaths = new Set<string>([
+    ...Object.keys(previous.dbSymbols),
+    ...Object.keys(next.dbSymbols),
+  ]);
+  for (const path of symbolPaths) {
+    const previousValue = previous.dbSymbols[path];
+    const nextValue = next.dbSymbols[path];
+    if (!Object.is(previousValue, nextValue)) {
+      symbolDiffs.push({ path, previous: previousValue, current: nextValue });
     }
   }
 
-  return { inputs, outputs, flags, dataBlocks: blockDiffs };
+  return { inputs, outputs, flags, dbSymbols: symbolDiffs };
+}
+
+export function resolveOptimizedDbSymbol(
+  state: PlcState,
+  path: string,
+  dataType: PlcValueType
+) {
+  if (state instanceof PlcStateImpl) {
+    return state.resolveOptimizedSymbol(path, dataType);
+  }
+  return fail(
+    createError(
+      PlcErrorCode.InvalidConfig,
+      "Unsupported PLC state implementation"
+    )
+  );
 }

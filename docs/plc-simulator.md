@@ -4,7 +4,7 @@ The PLC state simulator provides an in-memory model of Siemens S7 style memory a
 
 ## Memory Areas and Configuration
 
-`createPlcState` accepts a `PlcStateConfig` describing the byte-length of each region:
+`createPlcState` accepts a `PlcStateConfig` describing the byte-length of each region along with optimized data block definitions:
 
 ```ts
 import { createPlcState } from "@scl-emulator/core";
@@ -13,31 +13,46 @@ const plc = createPlcState({
   inputs: { size: 16 },   // `I` area: process inputs
   outputs: { size: 16 },  // `Q` area: process outputs
   flags: { size: 32 },    // `M` area: internal markers
-  dataBlocks: [
-    { id: 1, size: 256 },
-    { id: 7, size: 128 },
-  ],
+  optimizedDataBlocks: {
+    instances: [{ name: "Mixer", type: "MixerState" }],
+    types: {
+      MixerState: {
+        fields: [
+          { kind: "scalar", name: "isRunning", dataType: "BOOL" },
+          { kind: "scalar", name: "rpm", dataType: "REAL" },
+          {
+            kind: "array",
+            name: "temperatures",
+            length: 3,
+            element: { kind: "scalar", name: "value", dataType: "REAL" },
+          },
+        ],
+      },
+    },
+  },
 });
 ```
 
 All regions use big-endian layout to mirror S7 controllers. A configured area may be omitted when not needed; attempts to interact with an unconfigured region return `ok: false` with `code: "uninitialized_area"`.
 
+Optimized DBs require callers to declare FB instances and their member layout up front. Each symbol is referenced by its canonical dot/bracket path (e.g., `Mixer.rpm`, `Mixer.temperatures[0]`).
+
 ## Address Notation
 
-The simulator accepts Siemens symbolic addresses:
+The simulator accepts Siemens symbolic addresses for I/Q/M areas and FB instance paths for optimized DB symbols:
 
 - **Inputs/Outputs/Flags**
   - Bit: `I0.0`, `Q4.3`, `M10.7`
   - Byte: `IB2`, `QB10`, `MB5`
   - Word: `IW0`, `QW12`, `MW100`
   - Double Word: `ID4`, `QD20`, `MD200`
-- **Data Blocks**
-  - Bit: `DB1.DBX0.0`, `DB7.DBX12.5`
-  - Byte: `DB1.DBB0`
-  - Word: `DB1.DBW2`
-  - Double Word: `DB1.DBD4`
+- **Optimized Data Blocks**
+  - Scalar: `Mixer.isRunning`, `Mixer.rpm`
+  - Nested structs: `Mixer.status.code`
+  - Arrays: `Mixer.temperatures[2]`
+  - Nested FB instances: `Mixer.pumpA.pressure`
 
-Typed getters allow either the canonical token (e.g., `DB1.DBD0`) or a bit-form address with `.0` alignment (`DB1.DBX0.0`). Misaligned or invalid addresses return `ok: false` with `code: "alignment_error"` or `"invalid_address"`.
+Optional `#` prefixes (e.g., `#pumpA`) that appear in SCL multi-instance calls are stripped automatically. Lookups are case-insensitive, but the simulator stores and reports declaration casing.
 
 ## Typed Reads and Writes
 
@@ -47,20 +62,20 @@ Every API returns a `PlcResult<T>` with `{ ok: true, value }` on success, and `{
 const bitWrite = plc.writeBool("I0.0", true);
 if (!bitWrite.ok) throw bitWrite.error;
 
-const lintRead = plc.readLint("DB1.DBX64.0");
-const position = lintRead.ok ? lintRead.value : 0n;
+const rpmRead = plc.readReal("Mixer.rpm");
+const currentRpm = rpmRead.ok ? rpmRead.value : 0;
 
-const pumpSpeed = plc.readReal("DB7.DBD12");
-if (pumpSpeed.ok) {
-  console.log("Pump speed", pumpSpeed.value);
+const alarm = plc.readBool("Mixer.pumpA.alarms[0]");
+if (alarm.ok && alarm.value) {
+  console.warn("Pump alarm raised");
 }
 ```
 
-Supported scalar data types:
+Supported scalar data types remain unchanged:
 
 | Type   | Accessor                 | Size | Notes |
 | ------ | ----------------------- | ---- | ----- |
-| BOOL   | `readBool` / `writeBool` | 1 bit | Uses containing byte, requires bit notation |
+| BOOL   | `readBool` / `writeBool` | 1 bit | Uses containing byte, requires bit notation for I/Q/M |
 | BYTE   | `readByte` / `writeByte` | 1 byte | Unsigned |
 | SINT   | `readSInt` / `writeSInt` | 1 byte | Signed |
 | WORD   | `readWord` / `writeWord` | 2 bytes | Unsigned, 2-byte alignment |
@@ -73,9 +88,9 @@ Supported scalar data types:
 | TIME   | `readTime` / `writeTime` | 4 bytes | Signed milliseconds |
 | DATE   | `readDate` / `writeDate` | 2 bytes | Unsigned days since 1990-01-01 |
 | TOD    | `readTod` / `writeTod`   | 4 bytes | Unsigned milliseconds since midnight |
-| STRING | `readString` / `writeString` | 2 + N | Siemens metadata + ASCII payload |
+| STRING | `readString` / `writeString` | 2 + N | Declared max length enforced via symbol metadata |
 
-`writeString` honours the Siemens metadata convention (`byte[0] = max`, `byte[1] = current length`). Provide `maxLength` to declare capacity and set `truncate: true` when longer input should be clipped instead of rejected.
+`writeString` honours the Siemens metadata convention (`byte[0] = max`, `byte[1] = current length`). The simulator enforces the declared `stringLength` for each symbol; callers may provide `maxLength` and `truncate: true` to clamp input before writing.
 
 ## Observability
 
@@ -89,6 +104,13 @@ const unsubscribeAll = plc.onStateChange(({ region, diff }) => {
 const unsubscribeInputs = plc.onAreaChange({ area: "I" }, diff => {
   // diff is an array of { offset, previous, current }
 });
+
+const unsubscribeMixer = plc.onAreaChange(
+  { area: "DB", instancePath: "Mixer" },
+  diff => {
+    // diff is an array of { path, previous, current }
+  }
+);
 ```
 
 Observers fire synchronously after each successful write. Writing the same value twice is a no-op and does not emit notifications.
@@ -104,23 +126,24 @@ const after = snapshotState(plc);
 const diff = diffStates(before, after);
 ```
 
-`snapshotState` returns plain objects containing byte arrays for each area, and `diffStates` composes byte-level deltas grouped by region. Both structures are JSON-serializable and safe to persist or transmit.
+`snapshotState` returns plain objects containing byte arrays for I/Q/M regions and a symbol map for optimized DB instances. `diffStates` produces byte-level deltas for I/Q/M and symbol-level changes for optimized DBs. Both structures are JSON-serializable and safe to persist or transmit.
 
 ## Error Handling
 
 Common error codes surfaced through `PlcResult`:
 
-| Code                 | Meaning |
-| -------------------- | ------- |
-| `invalid_address`    | Address string cannot be parsed |
-| `alignment_error`    | Address violates alignment or bit rules |
-| `out_of_range`       | Access exceeds configured memory or declared capacity |
-| `type_mismatch`      | Value is not representable for the requested type |
-| `unknown_data_block` | Data block number is not configured |
-| `uninitialized_area` | Area (I/Q/M) was not configured in the state |
+| Code                    | Meaning |
+| ----------------------- | ------- |
+| `invalid_address`       | Address string cannot be parsed |
+| `alignment_error`       | Address violates alignment or bit rules |
+| `out_of_range`          | Access exceeds configured memory or declared capacity |
+| `type_mismatch`         | Value is not representable for the requested type |
+| `unknown_fb_instance`   | Referenced FB instance was not configured |
+| `unknown_symbol`        | Symbol path is not declared under the FB instance |
+| `uninitialized_area`    | Area (I/Q/M) was not configured in the state |
 
 ### Troubleshooting Tips
 
-- Ensure the configuration allocates enough bytes for every address you touch; reads past the configured size fail with `out_of_range`.
-- Use word/dword tokens (`IW`, `DBD`) for aligned accesses to avoid alignment errors when interfacing with SCADA exports.
-- When migrating S7 DB layouts, remember that strings reserve two metadata bytes before the payload.
+- Ensure the configuration declares every FB instance and nested member accessed by your tooling.
+- When migrating from absolute DB offsets, map each address to the canonical symbol path and remove `DBn.` prefixes.
+- Use `listFbInstanceSymbols` to surface metadata for UI inspectors or validation tooling.

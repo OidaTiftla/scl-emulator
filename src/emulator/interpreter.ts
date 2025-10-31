@@ -13,10 +13,12 @@ import type {
   IrForStatement,
   IrProgram,
   IrStatement,
+  IrVariable,
   IrWhileStatement,
   SclDataType,
   UnaryOperator,
 } from "./ir/types.js";
+import { resolveOptimizedDbSymbol } from "../plc/state/index.js";
 import type {
   PlcResult,
   PlcSnapshot,
@@ -34,9 +36,17 @@ export interface ExecutionOptions {
 export type SymbolBindingInput =
   | string
   | {
-      address: string;
+      address?: string;
+      symbol?: SymbolReferenceInput;
       dataType?: SclDataType;
       stringLength?: number;
+    };
+
+export type SymbolReferenceInput =
+  | string
+  | {
+      instance: string;
+      path?: string;
     };
 
 export interface ExecutionEffect {
@@ -58,6 +68,7 @@ export interface ExecutionResult {
 interface SymbolBinding {
   readonly name: string;
   readonly address: string;
+  readonly kind: "address" | "symbol";
   readonly dataType: SclDataType;
   readonly stringLength?: number;
   readonly range: SourceRange;
@@ -126,35 +137,138 @@ class Interpreter {
         );
       }
 
-      const binding =
-        typeof bindingInput === "string"
-          ? {
-              address: bindingInput,
-              dataType: variable.dataType,
-              stringLength: variable.stringLength,
-            }
-          : {
-              address: bindingInput.address,
-              dataType: bindingInput.dataType ?? variable.dataType,
-              stringLength:
-                bindingInput.stringLength ?? variable.stringLength,
-            };
-
-      if (!binding.address) {
-        throw new SclEmulatorRuntimeError(
-          `Binding for variable "${variable.name}" is missing an address`,
-          variable.range
-        );
-      }
-
-      this.symbolTable.set(variable.name, {
-        name: variable.name,
-        address: binding.address,
-        dataType: binding.dataType,
-        stringLength: binding.stringLength,
-        range: variable.range,
-      });
+      const binding = this.normalizeBinding(variable, bindingInput);
+      this.symbolTable.set(variable.name, binding);
     }
+  }
+
+  private normalizeBinding(variable: IrVariable, input: SymbolBindingInput): SymbolBinding {
+    if (typeof input !== "string" && input.symbol !== undefined && input.address !== undefined) {
+      throw new SclEmulatorRuntimeError(
+        `Binding for variable "${variable.name}" must specify either an address or a symbol, not both`,
+        variable.range
+      );
+    }
+
+    if (typeof input !== "string" && input.symbol !== undefined) {
+      return this.normalizeSymbolBinding(
+        variable.name,
+        input.symbol,
+        input.dataType ?? variable.dataType,
+        input.stringLength ?? variable.stringLength,
+        variable.range
+      );
+    }
+
+    const dataType =
+      typeof input === "string"
+        ? variable.dataType
+        : input.dataType ?? variable.dataType;
+    const stringLength =
+      dataType === "STRING"
+        ? (typeof input === "string" ? variable.stringLength : input.stringLength ?? variable.stringLength)
+        : undefined;
+    const address = typeof input === "string" ? input : input.address;
+
+    if (!address) {
+      throw new SclEmulatorRuntimeError(
+        `Binding for variable "${variable.name}" is missing an address`,
+        variable.range
+      );
+    }
+
+    return this.normalizeAddressBinding(
+      variable.name,
+      address,
+      dataType,
+      stringLength,
+      variable.range
+    );
+  }
+
+  private normalizeSymbolBinding(
+    variableName: string,
+    reference: SymbolReferenceInput,
+    dataType: SclDataType,
+    stringLength: number | undefined,
+    range: SourceRange
+  ): SymbolBinding {
+    const rawPath = this.resolveSymbolReference(reference, range);
+    const resolution = resolveOptimizedDbSymbol(this.state, rawPath, dataType);
+    if (!resolution.ok) {
+      throw new SclEmulatorRuntimeError(resolution.error.message, range);
+    }
+    const descriptor = resolution.value;
+    const effectiveStringLength =
+      dataType === "STRING"
+        ? descriptor.stringLength ?? stringLength
+        : stringLength;
+
+    if (dataType === "STRING" && effectiveStringLength === undefined) {
+      throw new SclEmulatorRuntimeError(
+        `No string length declared for symbol "${descriptor.declarationPath}"`,
+        range
+      );
+    }
+
+    return {
+      name: variableName,
+      address: descriptor.declarationPath,
+      kind: "symbol",
+      dataType,
+      stringLength: effectiveStringLength,
+      range,
+    };
+  }
+
+  private normalizeAddressBinding(
+    variableName: string,
+    addressInput: string,
+    dataType: SclDataType,
+    stringLength: number | undefined,
+    range: SourceRange
+  ): SymbolBinding {
+    const sanitized = sanitizeAddress(addressInput);
+    if (isDbAbsoluteAddress(sanitized)) {
+      throw new SclEmulatorRuntimeError(
+        `DB absolute address "${addressInput}" is not supported; provide the symbolic FB instance path instead`,
+        range
+      );
+    }
+
+    if (isSymbolicAddress(sanitized)) {
+      return this.normalizeSymbolBinding(variableName, sanitized, dataType, stringLength, range);
+    }
+
+    return {
+      name: variableName,
+      address: sanitized,
+      kind: "address",
+      dataType,
+      stringLength,
+      range,
+    };
+  }
+
+  private resolveSymbolReference(reference: SymbolReferenceInput, range: SourceRange): string {
+    if (typeof reference === "string") {
+      const sanitized = sanitizeSymbolPath(reference);
+      if (!sanitized) {
+        throw new SclEmulatorRuntimeError("Symbol path must be non-empty", range);
+      }
+      return sanitized;
+    }
+    const instance = reference.instance?.trim();
+    if (!instance) {
+      throw new SclEmulatorRuntimeError("Symbol reference is missing an instance name", range);
+    }
+    const relativePath = reference.path?.trim();
+    const combined = relativePath ? `${instance}.${relativePath}` : instance;
+    const sanitized = sanitizeSymbolPath(combined);
+    if (!sanitized) {
+      throw new SclEmulatorRuntimeError("Symbol path must be non-empty", range);
+    }
+    return sanitized;
   }
 
   private initializeVariables(): void {
@@ -636,12 +750,34 @@ class Interpreter {
     stringLength: number | undefined,
     range: SourceRange
   ): ExecutionEffect {
+    const sanitized = sanitizeAddress(address);
+    if (isDbAbsoluteAddress(sanitized)) {
+      throw new SclEmulatorRuntimeError(
+        `DB absolute address "${address}" is not supported; provide the symbolic FB instance path instead`,
+        range
+      );
+    }
+
+    let targetAddress = sanitized;
+    let effectiveStringLength = stringLength;
+
+    if (isSymbolicAddress(sanitized)) {
+      const resolution = resolveOptimizedDbSymbol(this.state, sanitized, dataType);
+      if (!resolution.ok) {
+        throw new SclEmulatorRuntimeError(resolution.error.message, range);
+      }
+      targetAddress = resolution.value.declarationPath;
+      if (dataType === "STRING") {
+        effectiveStringLength = resolution.value.stringLength ?? effectiveStringLength;
+      }
+    }
+
     const coerced = normalizeForType(value, dataType, range);
-    const result = performWrite(this.state, dataType, address, coerced, stringLength);
+    const result = performWrite(this.state, dataType, targetAddress, coerced, effectiveStringLength);
     if (!result.ok) {
       throw new SclEmulatorRuntimeError(result.error.message, range);
     }
-    return { address, dataType, value: coerced };
+    return { address: targetAddress, dataType, value: coerced };
   }
 
   private readAddress(
@@ -650,7 +786,29 @@ class Interpreter {
     stringLength: number | undefined,
     range: SourceRange
   ): ExecutionValue {
-    const result = performRead(this.state, dataType, address, stringLength);
+    const sanitized = sanitizeAddress(address);
+    if (isDbAbsoluteAddress(sanitized)) {
+      throw new SclEmulatorRuntimeError(
+        `DB absolute address "${address}" is not supported; provide the symbolic FB instance path instead`,
+        range
+      );
+    }
+
+    let targetAddress = sanitized;
+    let effectiveStringLength = stringLength;
+
+    if (isSymbolicAddress(sanitized)) {
+      const resolution = resolveOptimizedDbSymbol(this.state, sanitized, dataType);
+      if (!resolution.ok) {
+        throw new SclEmulatorRuntimeError(resolution.error.message, range);
+      }
+      targetAddress = resolution.value.declarationPath;
+      if (dataType === "STRING") {
+        effectiveStringLength = resolution.value.stringLength ?? effectiveStringLength;
+      }
+    }
+
+    const result = performRead(this.state, dataType, targetAddress, effectiveStringLength);
     if (!result.ok) {
       throw new SclEmulatorRuntimeError(result.error.message, range);
     }
@@ -672,19 +830,25 @@ function inferDataTypeFromAddress(address: string): SclDataType | undefined {
   if (/^(I|Q|M)D\d+$/.test(trimmed)) {
     return "DWORD";
   }
-  if (/^DB\d+\.DBX\d+(?:\.\d)?$/.test(trimmed)) {
-    return "BOOL";
-  }
-  if (/^DB\d+\.DBB\d+$/.test(trimmed)) {
-    return "BYTE";
-  }
-  if (/^DB\d+\.DBW\d+$/.test(trimmed)) {
-    return "WORD";
-  }
-  if (/^DB\d+\.DBD\d+$/.test(trimmed)) {
-    return "DWORD";
-  }
   return undefined;
+}
+
+const ABSOLUTE_ADDRESS_PATTERN = /^(?:[IQM](?:[BWD])?\d+(?:\.\d)?)$/i;
+
+function sanitizeAddress(address: string): string {
+  return address.replace(/\s+/g, "").replace(/#/g, "");
+}
+
+function sanitizeSymbolPath(path: string): string {
+  return sanitizeAddress(path);
+}
+
+function isDbAbsoluteAddress(address: string): boolean {
+  return /^DB/i.test(address);
+}
+
+function isSymbolicAddress(address: string): boolean {
+  return !ABSOLUTE_ADDRESS_PATTERN.test(address);
 }
 
 function toBoolean(value: ExecutionValue, range: SourceRange): boolean {

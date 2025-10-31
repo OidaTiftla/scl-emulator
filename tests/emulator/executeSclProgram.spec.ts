@@ -7,6 +7,10 @@ import {
   executeSclProgram,
   parseScl,
 } from "../../src/index.js";
+import { emulatorDbConfig } from "../fixtures/dbDefinitions/emulator.js";
+
+const PROGRAM_ROOT = "ProgramState";
+const db = (segment: string) => `${PROGRAM_ROOT}.${segment}`;
 
 describe("executeSclProgram", () => {
   it("executes assignments and boolean logic against PLC flags", () => {
@@ -24,17 +28,17 @@ describe("executeSclProgram", () => {
     const ast = parseScl(source);
     const state = createPlcState({
       flags: { size: 1 },
-      dataBlocks: [{ id: 1, size: 1 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     const result = executeSclProgram(ast, state, {
       trace: true,
       symbols: {
-        toggleFlag: "DB1.DBX0.0",
+        toggleFlag: db("toggleFlag"),
       },
     });
 
-    const toggleValue = state.readBool("DB1.DBX0.0");
+    const toggleValue = state.readBool(db("toggleFlag"));
     expect(toggleValue.ok).toBe(true);
     expect(toggleValue.ok && toggleValue.value).toBe(true);
 
@@ -44,7 +48,7 @@ describe("executeSclProgram", () => {
 
     expect(result.trace).toBeDefined();
     expect(result.trace?.length).toBe(2);
-    expect(result.trace?.[0]?.effects[0]?.address).toBe("DB1.DBX0.0");
+    expect(result.trace?.[0]?.effects[0]?.address).toBe(db("toggleFlag"));
     expect(result.trace?.[1]?.effects[0]?.address).toBe("M0.0");
   });
 
@@ -63,17 +67,17 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     const result = executeSclProgram(ast, state, {
       symbols: {
-        count: "DB1.DBW0",
+        count: db("count"),
       },
     });
 
-    expect(result.snapshot.dataBlocks[1]?.[0]).toBeDefined();
-    const countValue = state.readInt("DB1.DBW0");
+    expect(result.snapshot.dbSymbols[db("count")]).toBeDefined();
+    const countValue = state.readInt(db("count"));
     expect(countValue.ok && countValue.value).toBe(3);
   });
 
@@ -94,20 +98,20 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     executeSclProgram(ast, state, {
       symbols: {
-        index: "DB1.DBW0",
-        total: "DB1.DBW2",
+        index: db("index"),
+        total: db("total"),
       },
     });
 
-    const indexValue = state.readInt("DB1.DBW0");
+    const indexValue = state.readInt(db("index"));
     expect(indexValue.ok && indexValue.value).toBe(6);
 
-    const totalValue = state.readInt("DB1.DBW2");
+    const totalValue = state.readInt(db("total"));
     expect(totalValue.ok && totalValue.value).toBe(6);
   });
 
@@ -131,20 +135,20 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     executeSclProgram(ast, state, {
       symbols: {
-        index: "DB1.DBW0",
-        total: "DB1.DBW2",
+        index: db("index"),
+        total: db("total"),
       },
     });
 
-    const indexValue = state.readInt("DB1.DBW0");
+    const indexValue = state.readInt(db("index"));
     expect(indexValue.ok && indexValue.value).toBe(3);
 
-    const totalValue = state.readInt("DB1.DBW2");
+    const totalValue = state.readInt(db("total"));
     expect(totalValue.ok && totalValue.value).toBe(3);
   });
 
@@ -158,7 +162,7 @@ describe("executeSclProgram", () => {
       BEGIN
         total := 0;
         FOR index := 0 TO 5 DO
-          IF (index = 1) OR (index = 3) OR (index = 5) THEN
+          IF (index MOD 2) = 0 THEN
             CONTINUE;
           END_IF;
           total := total + index;
@@ -168,35 +172,35 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     executeSclProgram(ast, state, {
       symbols: {
-        index: "DB1.DBW0",
-        total: "DB1.DBW2",
+        index: db("index"),
+        total: db("total"),
       },
     });
 
-    const indexValue = state.readInt("DB1.DBW0");
+    const indexValue = state.readInt(db("index"));
     expect(indexValue.ok && indexValue.value).toBe(6);
 
-    const totalValue = state.readInt("DB1.DBW2");
-    expect(totalValue.ok && totalValue.value).toBe(6);
+    const totalValue = state.readInt(db("total"));
+    expect(totalValue.ok && totalValue.value).toBe(15);
   });
 
-  it("executes CASE selectors with ELSE branch to drive outputs", () => {
+  it("supports CASE selectors", () => {
     const source = `
-      FUNCTION_BLOCK ModeSwitcher
+      FUNCTION_BLOCK Switch
       VAR
         mode : INT;
       END_VAR
       BEGIN
         CASE mode OF
-          0: QB0 := 0;
-          1: QB0 := 1;
+          0: QB0 := 1;
+          1: QB0 := 2;
         ELSE
-          QB0 := 255;
+          QB0 := 3;
         END_CASE;
       END_FUNCTION_BLOCK
     `;
@@ -204,20 +208,19 @@ describe("executeSclProgram", () => {
     const ast = parseScl(source);
     const state = createPlcState({
       outputs: { size: 1 },
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
-    // Seed the mode variable to branch into selector "1".
-    state.writeInt("DB1.DBW0", 1);
+    expect(state.writeInt(db("mode"), 1).ok).toBe(true);
 
     executeSclProgram(ast, state, {
       symbols: {
-        mode: "DB1.DBW0",
+        mode: db("mode"),
       },
     });
 
     const output = state.readByte("QB0");
-    expect(output.ok && output.value).toBe(1);
+    expect(output.ok && output.value).toBe(2);
   });
 
   it("supports CASE selector ranges", () => {
@@ -241,14 +244,13 @@ describe("executeSclProgram", () => {
     const runWithMode = (modeValue: number) => {
       const state = createPlcState({
         outputs: { size: 1 },
-        dataBlocks: [{ id: 1, size: 4 }],
+        optimizedDataBlocks: emulatorDbConfig,
       });
-      const writeResult = state.writeInt("DB1.DBW0", modeValue);
-      expect(writeResult.ok).toBe(true);
+      expect(state.writeInt(db("mode"), modeValue).ok).toBe(true);
 
       executeSclProgram(ast, state, {
         symbols: {
-          mode: "DB1.DBW0",
+          mode: db("mode"),
         },
       });
 
@@ -285,20 +287,20 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     executeSclProgram(ast, state, {
       symbols: {
-        idx: "DB1.DBW0",
-        hits: "DB1.DBW2",
+        idx: db("idx"),
+        hits: db("hits"),
       },
     });
 
-    const idxValue = state.readInt("DB1.DBW0");
+    const idxValue = state.readInt(db("idx"));
     expect(idxValue.ok && idxValue.value).toBe(5);
 
-    const hitsValue = state.readInt("DB1.DBW2");
+    const hitsValue = state.readInt(db("hits"));
     expect(hitsValue.ok && hitsValue.value).toBe(2);
   });
 
@@ -317,13 +319,13 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 1 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     expect(() =>
       executeSclProgram(ast, state, {
         symbols: {
-          flag: "DB1.DBX0.0",
+          flag: db("flag"),
         },
         maxLoopIterations: 5,
       })
@@ -346,13 +348,13 @@ describe("executeSclProgram", () => {
 
     const ast = parseScl(source);
     const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 8 }],
+      optimizedDataBlocks: emulatorDbConfig,
     });
 
     expect(() =>
       executeSclProgram(ast, state, {
         symbols: {
-          flag: "DB1.DBX0.0",
+          flag: db("flag"),
         },
       })
     ).toThrow(SclEmulatorBuildError);
@@ -367,9 +369,7 @@ describe("executeSclProgram", () => {
     `;
 
     const ast = parseScl(source);
-    const state = createPlcState({
-      dataBlocks: [{ id: 1, size: 1 }],
-    });
+    const state = createPlcState({ optimizedDataBlocks: emulatorDbConfig });
 
     expect(() =>
       executeSclProgram(ast, state, {

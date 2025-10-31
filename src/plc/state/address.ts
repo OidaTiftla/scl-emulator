@@ -12,7 +12,6 @@ export interface ByteAddressParseOptions {
   alignment?: number;
 }
 
-const DB_PATTERN = /^DB(\d+)\.(DBX|DBB|DBW|DBD)(\d+)(?:\.(\d))?$/i;
 const BIT_PATTERN = /^([IQM])(\d+)\.(\d)$/i;
 const BYTE_PATTERN = /^([IQM])(B|W|D)?(\d+)$/i;
 
@@ -31,88 +30,14 @@ function parseCore(address: string): PlcResult<ParsedAddress> {
     );
   }
 
-  const dbMatch = trimmed.match(DB_PATTERN);
-  if (dbMatch) {
-    const [, dbNumRaw, tokenRaw, byteRaw, bitRaw] = dbMatch;
-    const token = tokenRaw.toUpperCase();
-    const byteOffset = Number.parseInt(byteRaw, 10);
-    const region: PlcAddressDescriptor["region"] = {
-      area: "DB",
-      dbNumber: Number.parseInt(dbNumRaw, 10),
-    };
-
-    if (!Number.isInteger(byteOffset) || byteOffset < 0) {
-      return fail(
-        createError(
-          PlcErrorCode.InvalidAddress,
-          "Data block byte offset must be a non-negative integer",
-          address,
-          { byteOffset }
-        )
-      );
-    }
-
-    switch (token) {
-      case "DBX": {
-        const bitOffset = bitRaw === undefined ? 0 : Number.parseInt(bitRaw, 10);
-        if (!Number.isInteger(bitOffset) || bitOffset < 0 || bitOffset > 7) {
-          return fail(
-            createError(
-              PlcErrorCode.InvalidAddress,
-              "Bit offset must be between 0 and 7",
-              address,
-              { bitOffset }
-            )
-          );
-        }
-        return ok({ region, byteOffset, bitOffset, notation: "BIT" });
-      }
-      case "DBB": {
-        if (bitRaw !== undefined) {
-          return fail(
-            createError(
-              PlcErrorCode.InvalidAddress,
-              "Byte address cannot specify a bit offset",
-              address
-            )
-          );
-        }
-        return ok({ region, byteOffset, notation: "BYTE" });
-      }
-      case "DBW": {
-        if (bitRaw !== undefined) {
-          return fail(
-            createError(
-              PlcErrorCode.InvalidAddress,
-              "Word address cannot specify a bit offset",
-              address
-            )
-          );
-        }
-        return ok({ region, byteOffset, notation: "WORD" });
-      }
-      case "DBD": {
-        if (bitRaw !== undefined) {
-          return fail(
-            createError(
-              PlcErrorCode.InvalidAddress,
-              "Double-word address cannot specify a bit offset",
-              address
-            )
-          );
-        }
-        return ok({ region, byteOffset, notation: "DWORD" });
-      }
-      default:
-        return fail(
-          createError(
-            PlcErrorCode.InvalidAddress,
-            "Unsupported data block token",
-            address,
-            { token }
-          )
-        );
-    }
+  if (/^DB/i.test(trimmed)) {
+    return fail(
+      createError(
+        PlcErrorCode.InvalidAddress,
+        "Absolute DB addresses are not supported. Use the symbolic FB instance path (e.g., OrderManager.orderCounter).",
+        address
+      )
+    );
   }
 
   const bitMatch = trimmed.match(BIT_PATTERN);

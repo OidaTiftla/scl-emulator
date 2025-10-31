@@ -1,4 +1,5 @@
-export { createPlcState, snapshotState, diffStates } from "./plcState.js";
+export { createPlcState, snapshotState, diffStates, resolveOptimizedDbSymbol } from "./plcState.js";
+export { listFbInstanceSymbols } from "./datapoints.js";
 export {
   PlcErrorCode,
 } from "./types.js";
