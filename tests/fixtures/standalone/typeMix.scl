@@ -1,0 +1,13 @@
+VAR
+  counter : DINT := 2;
+  precise : REAL := 1.5;
+  longCount : DINT := 5;
+  ready : BOOL := FALSE;
+  name : STRING[8];
+END_VAR
+
+counter := counter * 3;
+precise := precise + 0.25;
+longCount := longCount + 10;
+ready := NOT ready;
+name := 'ALPHA';

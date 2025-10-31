@@ -1,0 +1,12 @@
+VAR
+  index : INT;
+  total : INT;
+END_VAR
+
+total := 0;
+FOR index := 0 TO 7 DO
+  IF (index = 0) OR (index = 2) OR (index = 4) OR (index = 6) THEN
+    CONTINUE;
+  END_IF;
+  total := total + index;
+END_FOR;

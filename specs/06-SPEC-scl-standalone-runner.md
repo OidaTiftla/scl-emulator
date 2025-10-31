@@ -2,7 +2,7 @@
 
 ## Status
 
-- Proposed
+- Implemented
 
 ## Owners
 
@@ -134,3 +134,4 @@ END_FOR;
 ## History
 
 - 2025-10-31: Proposed for review.
+- 2025-10-31: Implemented standalone runner and tests.

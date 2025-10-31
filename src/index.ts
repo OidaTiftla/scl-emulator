@@ -9,3 +9,4 @@ export {
 } from "./plc/schema/analyzeFbSchema.js";
 export * from "./plc/state/index.js";
 export * from "./emulator/index.js";
+export * from "./standalone/index.js";
