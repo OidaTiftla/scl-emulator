@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-nix-shell -p codex nodejs pnpm playwright-test
+nix-shell -p codex nodejs pnpm

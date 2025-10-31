@@ -14,4 +14,4 @@ if (( ${#escaped_args[@]} )); then
     cmd+=" $joined"
 fi
 
-nix-shell -p codex nodejs pnpm playwright-test --run "$cmd"
+nix-shell -p codex nodejs pnpm --run "$cmd"
