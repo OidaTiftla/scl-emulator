@@ -6,10 +6,10 @@
   "type": "module",
   "scripts": {
     "antlr:generate": "rimraf src/generated && antlr-ng -Dlanguage=TypeScript -v true -l false -o src/generated Siemens-SCL-Antlr-Grammar/scl.g4",
-    "prebuild": "pnpm run antlr:generate",
+    "prebuild": "pnpm run lint",
     "build": "tsc -p tsconfig.build.json",
-    "pretest": "pnpm run antlr:generate",
-    "test": "vitest run",
+    "pretest": "pnpm run build",
+    "test": "vitest run --coverage",
     "prelint": "pnpm run antlr:generate",
     "lint": "eslint ."
   },
