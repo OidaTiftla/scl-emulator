@@ -2,6 +2,24 @@
 
 The PLC state simulator provides an in-memory model of Siemens S7 style memory areas so tools and test harnesses can inspect and manipulate controller data without connecting to hardware. This document explains addressing, supported operations, and common usage patterns.
 
+## Memory topology
+
+```mermaid
+flowchart LR
+  Config[PlcStateConfig] --> Inputs[I area]
+  Config --> Outputs[Q area]
+  Config --> Flags[M area]
+  Config --> OptimizedDBs[Optimized DBs]
+  OptimizedDBs --> Instances[Instances]
+  OptimizedDBs --> Types[Type definitions]
+  Inputs --> Snapshot[snapshotState]
+  Outputs --> Snapshot
+  Flags --> Snapshot
+  Instances --> Snapshot
+```
+
+Every configured area is optional; missing regions short-circuit to `uninitialized_area`. Optimized DBs require both instance declarations and struct definitions to materialise symbol metadata.
+
 ## Memory Areas and Configuration
 
 `createPlcState` accepts a `PlcStateConfig` describing the byte-length of each region along with optimized data block definitions:
@@ -36,6 +54,38 @@ const plc = createPlcState({
 All regions use big-endian layout to mirror S7 controllers. A configured area may be omitted when not needed; attempts to interact with an unconfigured region return `ok: false` with `code: "uninitialized_area"`.
 
 Optimized DBs require callers to declare FB instances and their member layout up front. Each symbol is referenced by its canonical dot/bracket path (e.g., `Mixer.rpm`, `Mixer.temperatures[0]`).
+
+### Symbol hierarchy
+
+```mermaid
+classDiagram
+  class PlcState {
+    +writeBool()
+    +readReal()
+    +onStateChange()
+    +snapshot()
+  }
+  class MemoryArea {
+    <<interface>>
+    +size: number
+    +buffer: Uint8Array
+  }
+  class OptimizedDb {
+    +name: string
+    +type: string
+    +fields: Field[]
+  }
+  class Field {
+    +kind: scalar|array
+    +dataType: SclDataType
+  }
+
+  PlcState --> MemoryArea
+  PlcState --> OptimizedDb
+  OptimizedDb --> Field
+```
+
+The state exposes strongly typed read/write helpers that wrap region-specific encoding/decoding paths.
 
 ## Address Notation
 
@@ -114,6 +164,22 @@ const unsubscribeMixer = plc.onAreaChange(
 ```
 
 Observers fire synchronously after each successful write. Writing the same value twice is a no-op and does not emit notifications.
+
+### Observation workflow
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant PlcState
+  participant Observer
+  Client->>PlcState: writeBool("Q0.0", true)
+  PlcState->>Observer: onAreaChange callback
+  Observer-->>Client: diff payload
+  Client->>PlcState: snapshotState()
+  PlcState-->>Client: PlcSnapshot
+```
+
+Observers trigger synchronously, enabling tests to assert against emitted diffs before taking further actions.
 
 ## Snapshots and Diffs
 

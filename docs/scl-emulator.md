@@ -2,6 +2,82 @@
 
 The SCL emulator interprets the Siemens SCL parse tree emitted by `parseScl` and executes a single deterministic scan against the in-memory PLC state implemented in `SPEC-plc-simulator`. The runtime walks the AST, converts it to a small intermediate representation, and drives the PLC via the typed read/write helpers exposed on `PlcState`.
 
+## Pipeline overview
+
+```mermaid
+flowchart TD
+  Parser["SCL AST (parseScl)"] --> Builder[IR builder]
+  Builder --> Binder[Symbol binding]
+  Binder --> Interpreter[Interpreter loop]
+  Interpreter --> PlcState[PLC state]
+  PlcState --> Snapshot["snapshot()/diffStates()"]
+  Interpreter --> Trace[Trace entries]
+```
+
+1. `parseScl` emits a typed AST that preserves source ranges for diagnostics.
+2. The IR builder normalises declarations, control flow, and expressions into deterministic instruction nodes.
+3. Symbol binding maps every declared variable to either a PLC address or an optimized DB symbol before execution begins.
+4. The interpreter evaluates statements sequentially, enforcing loop guards and emitting trace entries where requested.
+5. Snapshots and diffs expose the PLC memory state to downstream tooling.
+
+## IR structure
+
+```mermaid
+classDiagram
+  class IrProgram {
+    +IrVariable[] variables
+    +IrStatement[] statements
+  }
+  class IrVariable {
+    +string name
+    +SclDataType dataType
+    +SourceRange range
+    +IrExpression initializer
+  }
+  class IrStatement
+  class IrAssignment
+  class IrIf
+  class IrWhile
+  class IrCase
+  class IrFor
+  class IrExit
+  class IrContinue
+  class IrExpression
+  class IrLiteral
+  class IrVariableExpr
+  class IrAddressExpr
+  class IrUnary
+  class IrBinary
+  class IrComparison
+
+  IrProgram --> IrVariable
+  IrProgram --> IrStatement
+  IrStatement <|-- IrAssignment
+  IrStatement <|-- IrIf
+  IrStatement <|-- IrWhile
+  IrStatement <|-- IrCase
+  IrStatement <|-- IrFor
+  IrStatement <|-- IrExit
+  IrStatement <|-- IrContinue
+  IrExpression <|-- IrLiteral
+  IrExpression <|-- IrVariableExpr
+  IrExpression <|-- IrAddressExpr
+  IrExpression <|-- IrUnary
+  IrExpression <|-- IrBinary
+  IrExpression <|-- IrComparison
+  IrVariable --> IrExpression : initializer
+  IrAssignment --> IrExpression : expression
+  IrIf --> IrExpression : condition
+  IrIfBranch --> IrExpression : condition
+  IrWhile --> IrExpression : condition
+  IrCase --> IrExpression : discriminant
+  IrCaseBranch --> IrExpression : selectors
+  IrCaseSelector --> IrExpression : value/range
+  IrFor --> IrExpression : initial/end/step
+```
+
+Each node carries a `SourceRange` reference so runtime errors can echo precise locations back to developers.
+
 ## Supported language surface
 
 - Block types: the first `FUNCTION_BLOCK`, `ORGANIZATION_BLOCK`, `FUNCTION`, or `DATA_BLOCK` body discovered in the AST.
@@ -61,6 +137,26 @@ const { snapshot, trace } = executeSclProgram(ast, plc, options);
 - `trace`: when `true`, collects statement-level effects (`address`, `dataType`, `value`).
 
 The return value contains a snapshot of the final PLC memory (`PlcSnapshot`) and, when tracing is enabled, an ordered list of effects executed in that scan.
+
+### Statement evaluation lifecycle
+
+```mermaid
+stateDiagram-v2
+  [*] --> ResolveSymbols
+  ResolveSymbols --> InitializeVariables
+  InitializeVariables --> StatementLoop
+  StatementLoop --> Assignment: kind = assignment
+  StatementLoop --> Branch: kind = if/case
+  StatementLoop --> Loop: kind = for/while
+  StatementLoop --> Control: kind = exit/continue
+  Assignment --> StatementLoop
+  Branch --> StatementLoop
+  Loop --> StatementLoop
+  Control --> StatementLoop
+  StatementLoop --> [*]: all statements processed
+```
+
+Each handler produces zero or more `ExecutionEffect` records that are buffered when tracing is enabled. Loop handlers honour the configurable `maxLoopIterations` guard before returning control to the main loop.
 
 ## Examples
 
