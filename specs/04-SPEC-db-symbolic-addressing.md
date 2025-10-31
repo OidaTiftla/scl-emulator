@@ -120,9 +120,9 @@
 
 ## References
 
-- specs/SPEC-plc-simulator.md
-- specs/SPEC-scl-emulator.md
-- specs/SPEC-scl-parser.md
+- [02-SPEC-plc-simulator](02-SPEC-plc-simulator.md)
+- [03-SPEC-scl-emulator](03-SPEC-scl-emulator.md)
+- [01-SPEC-scl-parser](01-SPEC-scl-parser.md)
 
 ## History
 

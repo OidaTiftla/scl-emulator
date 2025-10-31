@@ -14,7 +14,7 @@
 
 ## Summary
 
-- Specify a TypeScript SCL emulator that interprets the AST produced by `parseScl`, executes a constrained subset of Siemens SCL logic, and manipulates PLC state via the APIs delivered in `SPEC-plc-simulator`.
+- Specify a TypeScript SCL emulator that interprets the AST produced by `parseScl`, executes a constrained subset of Siemens SCL logic, and manipulates PLC state via the APIs delivered in [02-SPEC-plc-simulator](02-SPEC-plc-simulator.md).
 
 ## Context
 
@@ -103,8 +103,8 @@
 
 ## References
 
-- specs/SPEC-scl-parser.md
-- specs/SPEC-plc-simulator.md
+- [01-SPEC-scl-parser](01-SPEC-scl-parser.md)
+- [02-SPEC-plc-simulator](02-SPEC-plc-simulator.md)
 
 ## History
 

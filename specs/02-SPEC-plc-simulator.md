@@ -99,7 +99,7 @@
 
 ## References
 
-- specs/SPEC-scl-parser.md
+- [01-SPEC-scl-parser](01-SPEC-scl-parser.md)
 
 ## History
 
