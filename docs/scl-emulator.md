@@ -91,6 +91,7 @@ Unsupported constructs (e.g. `REPEAT` loops, user-defined TYPE declarations, or 
 
 ```ts
 import {
+  analyzeFbSchema,
   createPlcState,
   executeSclProgram,
   parseScl,
@@ -108,16 +109,21 @@ const source = `
   END_FUNCTION_BLOCK
 `;
 
+const schemaAst = parseScl(`
+  FUNCTION_BLOCK ProgramState
+  VAR
+    toggleFlag : BOOL := FALSE;
+  END_VAR
+  END_FUNCTION_BLOCK
+`);
+
+const schema = analyzeFbSchema(schemaAst);
 const ast = parseScl(source);
 const plc = createPlcState({
   flags: { size: 1 },
   optimizedDataBlocks: {
     instances: [{ name: "ProgramState", type: "ProgramState" }],
-    types: {
-      ProgramState: {
-        fields: [{ kind: "scalar", name: "toggleFlag", dataType: "BOOL" }],
-      },
-    },
+    schema,
   },
 });
 
@@ -189,12 +195,18 @@ const toggleSource = `
 `;
 
 const toggleAst = parseScl(toggleSource);
+const retentionSchema = analyzeFbSchema(parseScl(`
+  FUNCTION_BLOCK ProgramState
+  VAR
+    stored : BOOL := FALSE;
+  END_VAR
+  END_FUNCTION_BLOCK
+`));
+
 const plc = createPlcState({
   optimizedDataBlocks: {
     instances: [{ name: "ProgramState", type: "ProgramState" }],
-    types: {
-      ProgramState: { fields: [{ kind: "scalar", name: "stored", dataType: "BOOL" }] },
-    },
+    schema: retentionSchema,
   },
 });
 
@@ -221,12 +233,18 @@ const resetSource = `
 `;
 
 const resetAst = parseScl(resetSource);
+const counterSchema = analyzeFbSchema(parseScl(`
+  FUNCTION_BLOCK ProgramState
+  VAR
+    counter : INT := 0;
+  END_VAR
+  END_FUNCTION_BLOCK
+`));
+
 const plc = createPlcState({
   optimizedDataBlocks: {
     instances: [{ name: "ProgramState", type: "ProgramState" }],
-    types: {
-      ProgramState: { fields: [{ kind: "scalar", name: "counter", dataType: "INT" }] },
-    },
+    schema: counterSchema,
   },
 });
 

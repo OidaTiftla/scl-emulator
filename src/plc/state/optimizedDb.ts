@@ -4,17 +4,18 @@ import {
   fail,
   ok,
   type FbSymbolDatapoint,
-  type OptimizedDbArrayFieldDefinition,
+  type FbArrayFieldSchema,
   type OptimizedDbConfiguration,
-  type OptimizedDbFieldDefinition,
-  type OptimizedDbFbFieldDefinition,
-  type OptimizedDbScalarFieldDefinition,
-  type OptimizedDbStructFieldDefinition,
+  type FbFieldSchema,
+  type FbInstanceFieldSchema,
+  type FbScalarFieldSchema,
+  type FbStructFieldSchema,
   type OptimizedFbInstanceDefinition,
-  type OptimizedFbTypeDefinition,
+  type FbTypeSchema,
   type PlcResult,
   type PlcValueType,
 } from "./types.js";
+import { normalizeSchemaRegistry } from "../schema/registry.js";
 
 export interface SymbolDescriptor {
   readonly canonicalPath: string;
@@ -53,7 +54,7 @@ export interface FbInstanceInfo {
 
 interface TypeInfo {
   readonly name: string;
-  readonly definition: OptimizedDbFieldDefinition[];
+  readonly definition: FbFieldSchema[];
 }
 
 interface InstanceRegistryEntry extends FbInstanceInfo {}
@@ -82,7 +83,14 @@ export class OptimizedDbStore {
       return;
     }
 
-    this.loadTypes(config.types ?? {});
+    if ("types" in config) {
+      throw new RangeError(
+        "optimizedDataBlocks.types is no longer supported; supply schema via optimizedDataBlocks.schema (see analyzeFbSchema)"
+      );
+    }
+
+    const schemaRegistry = normalizeSchemaRegistry(config.schema);
+    this.loadTypes(schemaRegistry);
     this.loadInstances(config.instances ?? []);
   }
 
@@ -284,16 +292,15 @@ export class OptimizedDbStore {
     );
   }
 
-  private loadTypes(types: Record<string, OptimizedFbTypeDefinition>): void {
-    for (const [name, value] of Object.entries(types)) {
-      const validatedName = validateIdentifier(name, "FB type");
-      const normalized = validatedName.toLowerCase();
-      if (this.typeDefinitions.has(normalized)) {
+  private loadTypes(schemas: Map<string, FbTypeSchema>): void {
+    for (const [normalizedName, schema] of schemas.entries()) {
+      const validatedName = validateIdentifier(schema.name, "FB type");
+      if (this.typeDefinitions.has(normalizedName)) {
         throw new RangeError(`Duplicate FB type definition "${validatedName}"`);
       }
-      this.typeDefinitions.set(normalized, {
+      this.typeDefinitions.set(normalizedName, {
         name: validatedName,
-        definition: Array.isArray(value.fields) ? value.fields : [],
+        definition: Array.isArray(schema.fields) ? schema.fields : [],
       });
     }
   }
@@ -349,7 +356,7 @@ export class OptimizedDbStore {
   }
 
   private expandFields(
-    fields: OptimizedDbFieldDefinition[],
+    fields: FbFieldSchema[],
     parentPath: string,
     instancePath: string,
     instanceType: string,
@@ -403,7 +410,7 @@ export class OptimizedDbStore {
   }
 
   private registerScalar(
-    field: OptimizedDbScalarFieldDefinition,
+    field: FbScalarFieldSchema,
     parentPath: string,
     instancePath: string,
     instanceType: string,
@@ -446,7 +453,7 @@ export class OptimizedDbStore {
   }
 
   private registerStruct(
-    field: OptimizedDbStructFieldDefinition,
+    field: FbStructFieldSchema,
     parentPath: string,
     instancePath: string,
     instanceType: string,
@@ -465,7 +472,7 @@ export class OptimizedDbStore {
   }
 
   private registerArray(
-    field: OptimizedDbArrayFieldDefinition,
+    field: FbArrayFieldSchema,
     parentPath: string,
     instancePath: string,
     instanceType: string,
@@ -540,7 +547,7 @@ export class OptimizedDbStore {
   }
 
   private registerNestedInstance(
-    field: OptimizedDbFbFieldDefinition,
+    field: FbInstanceFieldSchema,
     parentPath: string,
     instancePath: string,
     typeStack: Set<string>,
@@ -571,7 +578,7 @@ export class OptimizedDbStore {
   }
 
   private registerScalarElement(
-    element: OptimizedDbScalarFieldDefinition,
+    element: FbScalarFieldSchema,
     canonicalPath: string,
     instancePath: string,
     instanceType: string
@@ -609,7 +616,7 @@ export class OptimizedDbStore {
   }
 
   private registerArrayFbInstance(
-    element: OptimizedDbFbFieldDefinition,
+    element: FbInstanceFieldSchema,
     elementPath: string,
     typeStack: Set<string>
   ): void {
@@ -749,7 +756,7 @@ function assertNoNumericDbPrefix(name: string, label: string): void {
 }
 
 function validateStringLength(
-  field: OptimizedDbScalarFieldDefinition,
+  field: FbScalarFieldSchema,
   path: string
 ): number {
   if (field.stringLength === undefined) {

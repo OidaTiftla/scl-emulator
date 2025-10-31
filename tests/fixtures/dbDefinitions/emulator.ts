@@ -1,19 +1,27 @@
+import { analyzeFbSchema, parseScl } from "../../../src/index.js";
 import type { OptimizedDbConfiguration } from "../../../src/plc/state/types.js";
+
+const SOURCE = `
+FUNCTION_BLOCK ProgramState
+VAR
+  toggleFlag : BOOL := FALSE;
+  count : INT := 0;
+  index : INT := 0;
+  total : INT := 0;
+  mode : INT := 0;
+  idx : INT := 0;
+  hits : INT := 0;
+  flag : BOOL := FALSE;
+END_VAR
+END_FUNCTION_BLOCK
+`;
+
+const ast = parseScl(SOURCE);
+const schema = analyzeFbSchema(ast);
 
 export const emulatorDbConfig: OptimizedDbConfiguration = {
   instances: [{ name: "ProgramState", type: "ProgramState" }],
-  types: {
-    ProgramState: {
-      fields: [
-        { kind: "scalar", name: "toggleFlag", dataType: "BOOL", defaultValue: false },
-        { kind: "scalar", name: "count", dataType: "INT", defaultValue: 0 },
-        { kind: "scalar", name: "index", dataType: "INT", defaultValue: 0 },
-        { kind: "scalar", name: "total", dataType: "INT", defaultValue: 0 },
-        { kind: "scalar", name: "mode", dataType: "INT", defaultValue: 0 },
-        { kind: "scalar", name: "idx", dataType: "INT", defaultValue: 0 },
-        { kind: "scalar", name: "hits", dataType: "INT", defaultValue: 0 },
-        { kind: "scalar", name: "flag", dataType: "BOOL", defaultValue: false },
-      ],
-    },
-  },
+  schema,
 };
+
+export const programStateSchema = schema;

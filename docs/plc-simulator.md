@@ -11,21 +11,33 @@ flowchart LR
   Config --> Flags[M area]
   Config --> OptimizedDBs[Optimized DBs]
   OptimizedDBs --> Instances[Instances]
-  OptimizedDBs --> Types[Type definitions]
+  OptimizedDBs --> Schema[Schema registry]
   Inputs --> Snapshot[snapshotState]
   Outputs --> Snapshot
   Flags --> Snapshot
   Instances --> Snapshot
 ```
 
-Every configured area is optional; missing regions short-circuit to `uninitialized_area`. Optimized DBs require both instance declarations and struct definitions to materialise symbol metadata.
+Every configured area is optional; missing regions short-circuit to `uninitialized_area`. Optimized DBs require instance declarations plus a derived schema registry (typically built via `analyzeFbSchema`) to materialise symbol metadata.
 
 ## Memory Areas and Configuration
 
-`createPlcState` accepts a `PlcStateConfig` describing the byte-length of each region along with optimized data block definitions:
+`createPlcState` accepts a `PlcStateConfig` describing the byte-length of each region along with optimized data block instances and their schema. Schemas are typically auto-derived from SCL via `analyzeFbSchema`:
 
 ```ts
-import { createPlcState } from "@scl-emulator/core";
+import { analyzeFbSchema, createPlcState, parseScl } from "@scl-emulator/core";
+
+const schemaSource = `
+  FUNCTION_BLOCK MixerState
+  VAR
+    isRunning : BOOL := FALSE;
+    rpm : REAL := 0.0;
+    temperatures : ARRAY[0..2] OF REAL;
+  END_VAR
+  END_FUNCTION_BLOCK
+`;
+
+const schema = analyzeFbSchema(parseScl(schemaSource));
 
 const plc = createPlcState({
   inputs: { size: 16 },   // `I` area: process inputs
@@ -33,27 +45,14 @@ const plc = createPlcState({
   flags: { size: 32 },    // `M` area: internal markers
   optimizedDataBlocks: {
     instances: [{ name: "Mixer", type: "MixerState" }],
-    types: {
-      MixerState: {
-        fields: [
-          { kind: "scalar", name: "isRunning", dataType: "BOOL" },
-          { kind: "scalar", name: "rpm", dataType: "REAL" },
-          {
-            kind: "array",
-            name: "temperatures",
-            length: 3,
-            element: { kind: "scalar", name: "value", dataType: "REAL" },
-          },
-        ],
-      },
-    },
+    schema,
   },
 });
 ```
 
 All regions use big-endian layout to mirror S7 controllers. A configured area may be omitted when not needed; attempts to interact with an unconfigured region return `ok: false` with `code: "uninitialized_area"`.
 
-Optimized DBs require callers to declare FB instances and their member layout up front. Each symbol is referenced by its canonical dot/bracket path (e.g., `Mixer.rpm`, `Mixer.temperatures[0]`).
+Optimized DBs require callers to declare FB instances and provide a schema registry. Auto-derived schemas keep the layout aligned with the original SCL and automatically apply Siemens defaults such as `STRING[254]` bounds when omitted. Each symbol is referenced by its canonical dot/bracket path (e.g., `Mixer.rpm`, `Mixer.temperatures[0]`).
 
 ### Symbol hierarchy
 

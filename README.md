@@ -61,7 +61,12 @@ Key extension points include custom PLC initialisation, symbol binding, loop gua
 3. Execute the program by passing the AST, PLC state, and symbol bindings into `executeSclProgram`. Bindings map SCL variable names to PLC addresses (direct such as `M0.0` or data-block paths such as `ProgramState.count`), and optional flags surface tracing or tighten safety guards.
 
 ```ts
-import { createPlcState, executeSclProgram, parseScl } from "scl-emulator";
+import {
+  analyzeFbSchema,
+  createPlcState,
+  executeSclProgram,
+  parseScl,
+} from "scl-emulator";
 
 const source = `
   FUNCTION_BLOCK Toggle
@@ -74,16 +79,21 @@ const source = `
   END_FUNCTION_BLOCK
 `;
 
+const schemaAst = parseScl(`
+  FUNCTION_BLOCK ProgramState
+  VAR
+    toggleFlag : BOOL := FALSE;
+  END_VAR
+  END_FUNCTION_BLOCK
+`);
+
+const schema = analyzeFbSchema(schemaAst);
 const ast = parseScl(source);
 const state = createPlcState({
   flags: { size: 1 },
   optimizedDataBlocks: {
     instances: [{ name: "ProgramState", type: "ProgramState" }],
-    types: {
-      ProgramState: {
-        fields: [{ kind: "scalar", name: "toggleFlag", dataType: "BOOL", defaultValue: false }],
-      },
-    },
+    schema,
   },
 });
 
@@ -106,7 +116,7 @@ Vitest coverage in `tests/emulator/executeSclProgram.spec.ts` demonstrates addit
 - automatic declaration initialisation and runtime snapshots via `result.trace` when `trace: true`
 - explicit error surfaces: `SclEmulatorBuildError` for unsupported statements and `SclEmulatorRuntimeError` when bindings or control-flow usage are invalid
 
-Borrow the fixture in `tests/fixtures/dbDefinitions/emulator.ts` as a reference shape for optimized data blocks when modelling richer programs.
+Borrow the fixture in `tests/fixtures/dbDefinitions/emulator.ts` as a reference shape for deriving optimized data blocks directly from SCL sources via `analyzeFbSchema` when modelling richer programs.
 
 ### Regenerating the parser
 

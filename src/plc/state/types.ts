@@ -27,25 +27,20 @@ export interface OptimizedFbInstanceDefinition {
   type: string;
 }
 
-export interface OptimizedFbTypeDefinition {
+export interface FbTypeSchema {
+  /** Canonical FB type identifier (case preserved). */
+  name: string;
   /** Declarative member definitions for this FB type. */
-  fields: OptimizedDbFieldDefinition[];
+  fields: FbFieldSchema[];
 }
 
-export interface OptimizedDbConfiguration {
-  /** Top-level FB instances to provision into the PLC state. */
-  instances: OptimizedFbInstanceDefinition[];
-  /** FB type declarations keyed by type identifier. */
-  types: Record<string, OptimizedFbTypeDefinition>;
-}
+export type FbFieldSchema =
+  | FbScalarFieldSchema
+  | FbStructFieldSchema
+  | FbArrayFieldSchema
+  | FbInstanceFieldSchema;
 
-export type OptimizedDbFieldDefinition =
-  | OptimizedDbScalarFieldDefinition
-  | OptimizedDbStructFieldDefinition
-  | OptimizedDbArrayFieldDefinition
-  | OptimizedDbFbFieldDefinition;
-
-export interface OptimizedDbScalarFieldDefinition {
+export interface FbScalarFieldSchema {
   kind: "scalar";
   name: string;
   dataType: PlcValueType;
@@ -53,23 +48,37 @@ export interface OptimizedDbScalarFieldDefinition {
   stringLength?: number;
 }
 
-export interface OptimizedDbStructFieldDefinition {
+export interface FbStructFieldSchema {
   kind: "struct";
   name: string;
-  fields: OptimizedDbFieldDefinition[];
+  fields: FbFieldSchema[];
 }
 
-export interface OptimizedDbArrayFieldDefinition {
+export interface FbArrayFieldSchema {
   kind: "array";
   name: string;
   length: number;
-  element: OptimizedDbFieldDefinition;
+  element: FbFieldSchema;
 }
 
-export interface OptimizedDbFbFieldDefinition {
+export interface FbInstanceFieldSchema {
   kind: "fb";
   name: string;
   type: string;
+}
+
+export type FbTypeSchemaRegistry = Map<string, FbTypeSchema>;
+
+export type FbTypeSchemaRegistryInput =
+  | FbTypeSchemaRegistry
+  | ReadonlyMap<string, FbTypeSchema>
+  | Record<string, FbTypeSchema>;
+
+export interface OptimizedDbConfiguration {
+  /** Top-level FB instances to provision into the PLC state. */
+  instances: OptimizedFbInstanceDefinition[];
+  /** FB type schemas keyed by identifier or provided as a registry. */
+  schema: FbTypeSchemaRegistryInput;
 }
 
 export interface PlcStateConfig {
