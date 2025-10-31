@@ -1,5 +1,7 @@
 ## SCL Emulator
 
+> ⚠️ **Proof of Concept:** This emulator is an experimental prototype and **not production-ready**. APIs, behaviors, and grammar support may change without notice. Use for evaluation and feedback only.
+
 This package wraps the Siemens SCL ANTLR grammar and exposes a strict TypeScript helper for building an abstract syntax tree (AST) from SCL source text. Tooling relies entirely on Node.js (via `antlr-ng` and the `antlr4ng` runtime), so no local Java installation is required.
 
 ### Features overview
